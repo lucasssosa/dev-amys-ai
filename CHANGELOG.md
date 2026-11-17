@@ -24,6 +24,8 @@
   todo o consumo e o excesso de orçamento quando a duração atravessa a data do filtro.
 - A deduplicação do Claude conserva o uso atualizado de cada resposta, incluindo cache,
   sem somar parciais repetidas nem ocultar excesso de orçamento.
+- Respostas Claude com contadores desconhecidos preservam os subtotais comprovados de
+  entrada, saída e cache, com medição parcial e custo desconhecido, sem ocultar orçamento excedido.
 
 ## [0.1.2] - 2026-11-17
 

@@ -160,7 +160,12 @@ def ler_claude(pasta: Path, avisos: list) -> list:
                                 ("cache_leitura", "cache_read_input_tokens"),
                                 ("cache_escrita", "cache_creation_input_tokens")):
             valor = numero(uso.get(origem, 0))
-            grupo[destino] = None if valor is None or grupo[destino] is None else grupo[destino] + valor
+            if valor is None:
+                # Um contador desconhecido não apaga o consumo comprovado de outras respostas.
+                grupo["parcial"] = True
+                grupo["custo_confiavel"] = False
+            else:
+                grupo[destino] += valor
     for grupo in registros:
         # O Claude informa entrada sem cache; normalizamos para o total de entrada.
         if grupo["entrada"] is not None:

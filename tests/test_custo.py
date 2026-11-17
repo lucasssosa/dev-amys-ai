@@ -96,6 +96,35 @@ class MedicaoTest(unittest.TestCase):
         self.assertEqual((grupo["entrada"], grupo["saida"], grupo["cache_leitura"],
                           grupo["cache_escrita"], grupo["tokens"]), (75, 5, 25, 35, 80))
 
+    def test_claude_uso_parcial_preserva_subtotais_conhecidos(self):
+        completo = {"input_tokens": 500000, "output_tokens": 10,
+                    "cache_read_input_tokens": 20, "cache_creation_input_tokens": 30}
+        tarifas = {"modelo": {"entrada": 1, "saida": 1, "cache_leitura": 1, "cache_escrita": 1}}
+        for campo in completo:
+            for parcial_primeiro in (False, True):
+                with self.subTest(campo=campo, parcial_primeiro=parcial_primeiro):
+                    parcial = {**dict.fromkeys(completo, 1), campo: None}
+                    usos = [completo, parcial]
+                    if parcial_primeiro:
+                        usos.reverse()
+                    self.gravar("claude/a.jsonl", [
+                        {"requestId": f"r{indice}", "message": {"model": "modelo", "usage": uso}}
+                        for indice, uso in enumerate(usos)])
+                    registros, avisos = custo.coletar()
+                    self.assertFalse(avisos)
+                    self.assertEqual(len(registros), 1)
+                    grupo = custo.agrupar(registros, "task", tarifas)[0]
+                    entrada = sum(completo[chave] + (parcial[chave] or 0) for chave in
+                                  ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+                    saida = completo["output_tokens"] + (parcial["output_tokens"] or 0)
+                    self.assertEqual(grupo["entrada"], entrada)
+                    self.assertEqual(grupo["saida"], saida)
+                    self.assertEqual(grupo["tokens"], entrada + saida)
+                    self.assertEqual(grupo["cache_leitura"], 20 + (parcial["cache_read_input_tokens"] or 0))
+                    self.assertEqual(grupo["cache_escrita"], 30 + (parcial["cache_creation_input_tokens"] or 0))
+                    self.assertTrue(grupo["parcial"])
+                    self.assertIsNone(grupo["custo_usd"])
+
     def codex(self):
         return self.gravar("codex/2026/a.jsonl", [
             {"type": "session_meta", "timestamp": "2026-11-16T10:00:00Z", "payload": {
