@@ -45,7 +45,7 @@ if os.name == "nt":
 else:
     import fcntl
 
-VERSAO = "0.3.0"
+VERSAO = "0.3.1"
 
 RAIZ = Path(__file__).resolve().parent
 PASTA_SKILLS = RAIZ / "skills"
@@ -392,8 +392,17 @@ def instalar_mcp_json(ex: Execucao, caminho: Path, formato: str, servidores: dic
 
 
 def instalar_mcp_global(ex: Execucao, configuracoes: list[dict], servidores: dict, executar: bool,
-                       remover: bool = False):
+                       remover: bool = False, orientar_claude: bool = False):
     print("\nMCP global (rode uma vez):")
+    context7 = servidores.get("context7")
+    if context7 and not remover:
+        print("  Context7 (recomendado: documentação atual das bibliotecas)")
+        if orientar_claude and context7["tipo"] == "http":
+            # É uma alternativa ao MCP local: só exibir evita mudar o escopo do usuário.
+            print("  Claude Code (opcional, copie e rode para configurar no usuário):")
+            comando = ['claude', 'mcp', 'add', '--transport', 'http', '--scope', 'user',
+                       'context7', context7['url']]
+            print(f"  {comando_legivel(comando)}")
     pendentes = []
     for mcp in configuracoes:
         formato = mcp["formato"]
@@ -510,8 +519,9 @@ def instalar(args) -> Execucao:
                 else:
                     caminho = base / mcp["arquivo"]
                     instalar_mcp_json(ex, caminho, mcp["formato"], servidores, args.forcar)
-            if globais:
-                instalar_mcp_global(ex, globais, servidores, args.mcp_global)
+            if globais or "claude" in agentes:
+                instalar_mcp_global(ex, globais, servidores, args.mcp_global,
+                                   orientar_claude="claude" in agentes)
 
         if not args.simular:
             registrar_projeto(base, list(agentes), lista_csv(args.skills), args.sem_mcp)

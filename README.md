@@ -18,7 +18,7 @@ dev-amys-ai (este repositório)                 seu projeto
                      python kit.py run ───> qualquer modelo por API
 ```
 
-Versão atual: **0.3.0** ([CHANGELOG.md](CHANGELOG.md)).
+Versão atual: **0.3.1** ([CHANGELOG.md](CHANGELOG.md)).
 
 ## As peças
 
@@ -48,8 +48,16 @@ python kit.py install ../meu-projeto --mcp-global     # oferece executar MCP glo
 python kit.py install --global                       # só as skills, para todos os projetos
 ```
 
-Para Codex e Antigravity (agy), a instalação mostra a seção **MCP global (rode uma vez)**.
-Copie os comandos ou use `--mcp-global` e responda `s` a `Executar estes comandos? [s/N]`.
+O **Context7 é recomendado: documentação atual das bibliotecas**, para conferir as APIs da
+versão usada antes de programar. Sem esse MCP (ou outro de documentação), leia a documentação
+ou o código da versão instalada; nunca escreva de memória.
+
+Para Claude Code, Codex e Antigravity (agy), a instalação mostra a seção
+**MCP global (rode uma vez)**. No Claude Code, além do MCP local, mostra a alternativa opcional
+`claude mcp add --transport http --scope user context7 https://mcp.context7.com/mcp`,
+que você pode copiar e executar manualmente para disponibilizá-lo em todos os projetos.
+O kit só exibe esse comando do Claude. Para Codex e Antigravity, copie os comandos ou use
+`--mcp-global` e responda `s` a `Executar estes comandos? [s/N]`.
 Sem essa opção e confirmação, nenhum comando global é executado; com `--dry-run`, o kit só
 mostra os comandos, sem perguntar. `--no-mcp` omite arquivos e comandos de MCP.
 `--agents codex` ou `--agents antigravity`, sozinhos, também instalam as skills.

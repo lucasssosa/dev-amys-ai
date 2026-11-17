@@ -22,6 +22,8 @@ Objetivo: chegar a um plano aprovado pelo usuário antes de existir código. Mud
    ao fim de cada um. Para cada passo: arquivos, o que muda e como verificar.
 6. **Riscos.** Migração de dados, mudança de contrato público, segurança, dependência nova
    (confirme que ela existe e qual versão; nunca invente nome de biblioteca ou de função).
+   Confira no Context7 (ou outro MCP de documentação) as APIs da versão usada que o plano usa.
+   Sem esse MCP, leia a documentação ou o código da versão instalada. Nunca escreva de memória.
 7. **Parar.** Apresente o plano e espere o "ok" explícito. Não crie nem edite arquivos antes disso.
    Responder a uma pergunta de esclarecimento **não** é aprovação do plano.
 
