@@ -38,7 +38,7 @@ class MedicaoTest(unittest.TestCase):
     def rodar(self, *argumentos):
         saida, erro = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(saida), contextlib.redirect_stderr(erro):
-            codigo = kit.main(["custo", *argumentos])
+            codigo = kit.main(["cost", *argumentos])
         return codigo, saida.getvalue(), erro.getvalue()
 
     def test_claude_deduplica_request_e_message_id_inclusive_subagente(self):
@@ -263,7 +263,7 @@ class MedicaoTest(unittest.TestCase):
                     "input_tokens": total, "output_tokens": 0, "cached_input_tokens": 0}}}})
             self.gravar("codex/a.jsonl", linhas)
             with self.subTest(total=total):
-                codigo, saida, _ = self.rodar("--verificar-orcamento", str(self.raiz), "--json")
+                codigo, saida, _ = self.rodar("--check-budget", str(self.raiz), "--json")
                 dados = json.loads(saida)
                 self.assertEqual(codigo, 1)
                 self.assertEqual(dados["grupos"][0]["tokens"], esperado)
@@ -303,7 +303,7 @@ class MedicaoTest(unittest.TestCase):
                 self.assertEqual(len(registros), 2)
                 self.assertEqual([item["entrada"] for item in registros], [300000, 300000])
                 self.assertEqual([item["minutos"] for item in registros], [1, 1])
-                codigo, saida, _ = self.rodar("--verificar-orcamento", str(self.raiz), "--json")
+                codigo, saida, _ = self.rodar("--check-budget", str(self.raiz), "--json")
                 dados = json.loads(saida)
                 if dimensao == "papel":
                     self.assertEqual({item["papel"] for item in registros}, {"principal", "subagente"})
@@ -372,7 +372,7 @@ class MedicaoTest(unittest.TestCase):
                     arquivo = self.gravar(fonte, [])
                     arquivo.write_text(linha, encoding="utf-8")
                     codigo, saida, erro = self.rodar("--check-budget", str(self.raiz),
-                                                   "--desde", "2026-11-17", "--json")
+                                                   "--since", "2026-11-17", "--json")
                     self.assertEqual(codigo, 1, erro)
                     self.assertTrue(json.loads(saida)["incompletas"])
                     arquivo.unlink()
@@ -389,7 +389,7 @@ class MedicaoTest(unittest.TestCase):
         self.assertEqual(self.rodar("--check-budget", str(self.raiz), "--json")[0], 0)
         for tipo in ("event_msg", "session_meta", "turn_context"):
             for carga in ([], "", 0, False, None, [1], "inválido"):
-                for filtro in ((), ("--desde", "2026-11-17")):
+                for filtro in ((), ("--since", "2026-11-17")):
                     with self.subTest(tipo=tipo, payload=carga, filtro=filtro):
                         self.gravar("codex/a.jsonl", validas + [{"type": tipo, "payload": carga}])
                         codigo, saida, erro = self.rodar("--check-budget", str(self.raiz),
@@ -414,7 +414,7 @@ class MedicaoTest(unittest.TestCase):
                 with arquivo.open("a", encoding="utf-8") as fluxo:
                     fluxo.write(linha + "\n")
                 codigo, saida, erro = self.rodar("--check-budget", str(self.raiz),
-                                               "--desde", "2026-11-17", "--json")
+                                               "--since", "2026-11-17", "--json")
                 self.assertEqual(codigo, 1, erro)
                 self.assertEqual(json.loads(saida)["incompletas"], ["BL-LU-3: medição incompleta"])
 
@@ -499,7 +499,7 @@ class MedicaoTest(unittest.TestCase):
                 arquivo = self.gravar(f"{agente}/a.jsonl", linhas)
                 with patch("custo.subprocess.run", return_value=resultado_git):
                     codigo, texto, erro = self.rodar("--check-budget", str(principal),
-                                                    "--desde", "2026-11-17", "--json")
+                                                    "--since", "2026-11-17", "--json")
                 grupo = json.loads(texto)["grupos"][0]
                 self.assertEqual(grupo["task"], task)
                 self.assertGreaterEqual(grupo["limite_superior_tokens"], real)
@@ -570,25 +570,26 @@ class MedicaoTest(unittest.TestCase):
         for tokens, minutos, esperado in ((109, 3, 1), (110, 2, 1), (110, 3, 0)):
             with self.subTest(tokens=tokens, minutos=minutos):
                 projeto.write_text(f"orcamento:\n  por_task: {{ tokens: {tokens}, minutos: {minutos} }}", encoding="utf-8")
-                codigo, saida, _ = self.rodar("--verificar-orcamento", str(self.raiz), "--json")
+                codigo, saida, _ = self.rodar("--check-budget", str(self.raiz), "--json")
                 self.assertEqual(codigo, esperado)
                 self.assertEqual(bool(json.loads(saida)["estouros"]), bool(esperado))
         outro = self.raiz / "outro/.kit-ia/projeto.yaml"
         outro.parent.mkdir(parents=True)
         outro.write_text("orcamento:\n  por_task: {tokens: 0, minutos: 0}", encoding="utf-8")
-        self.assertEqual(self.rodar("--verificar-orcamento", str(outro.parent.parent))[0], 0)
+        self.assertEqual(self.rodar("--check-budget", str(outro.parent.parent))[0], 0)
 
     def test_filtros_agrupamentos_e_lote_markdown(self):
         self.codex()
         for por, esperado in (("task", "BL-LU-3"), ("agente", "codex"), ("modelo", "modelo"), ("papel", "principal")):
-            codigo, saida, _ = self.rodar("--desde", "2026-11-16", "--por", por, "--json")
+            opcao = {"task": "task", "agente": "agent", "modelo": "model", "papel": "role"}[por]
+            codigo, saida, _ = self.rodar("--since", "2026-11-16", "--by", opcao, "--json")
             self.assertEqual(codigo, 0)
             self.assertEqual(json.loads(saida)["grupos"][0][por], esperado)
-        self.assertEqual(json.loads(self.rodar("--desde", "2026-11-17", "--json")[1])["grupos"], [])
-        saida = self.rodar("--lote", "BL-LU-3,BL-LU-4")[1]
+        self.assertEqual(json.loads(self.rodar("--since", "2026-11-17", "--json")[1])["grupos"], [])
+        saida = self.rodar("--batch", "BL-LU-3,BL-LU-4")[1]
         self.assertIn("| BL-LU-3 | 110 | 3.00 | — |", saida)
         self.assertIn("Maior fonte de gasto: codex", saida)
-        self.assertNotIn("BL-LU-3 |", self.rodar("--lote", "BL-LU-4")[1])
+        self.assertNotIn("BL-LU-3 |", self.rodar("--batch", "BL-LU-4")[1])
 
     def test_orcamento_inclui_worktrees_irmas_e_exclui_outro_projeto(self):
         principal = self.raiz / "projeto com espaços"
@@ -608,7 +609,7 @@ class MedicaoTest(unittest.TestCase):
         with patch("custo.subprocess.run", return_value=resultado) as executar:
             for caminho in (principal, worktree, principal / ".kit-ia/projeto.yaml"):
                 with self.subTest(caminho=caminho):
-                    codigo, saida, _ = self.rodar("--verificar-orcamento", str(caminho), "--json")
+                    codigo, saida, _ = self.rodar("--check-budget", str(caminho), "--json")
                     dados = json.loads(saida)
                     self.assertEqual(codigo, 1)
                     self.assertEqual([grupo["task"] for grupo in dados["grupos"]], ["BL-LU-3"])
@@ -626,15 +627,15 @@ class MedicaoTest(unittest.TestCase):
             self.assertEqual(custo.raizes_projeto(subpasta), [subpasta])
 
     def test_erros_esperados_sem_stack_trace(self):
-        self.assertEqual(self.rodar("--desde", "ontem")[0], 1)
+        self.assertEqual(self.rodar("--since", "ontem")[0], 1)
         projeto = self.raiz / "projeto.yaml"
         projeto.write_text("orcamento: |\n  errado", encoding="utf-8")
-        codigo, _, erro = self.rodar("--verificar-orcamento", str(projeto))
+        codigo, _, erro = self.rodar("--check-budget", str(projeto))
         self.assertEqual(codigo, 1)
         self.assertIn("linha 1", erro)
         for conteudo in ("orcamento: {}", "orcamento: 1", "orcamento: {por_task: []}"):
             projeto.write_text(conteudo, encoding="utf-8")
-            self.assertEqual(self.rodar("--verificar-orcamento", str(projeto))[0], 1)
+            self.assertEqual(self.rodar("--check-budget", str(projeto))[0], 1)
 
     def test_json_truncado_avisa_e_preserva_o_restante(self):
         arquivo = self.codex()

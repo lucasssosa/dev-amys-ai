@@ -32,18 +32,17 @@ Aumentar o orçamento é decisão do usuário.
 
 ## Medição
 
-`kit.py custo` lê métricas locais de Claude Code (incluindo subagentes), Codex,
-Antigravity e chamadas de `kit.py executar`, sem gastar token de modelo nem guardar conversas.
+`kit.py cost` lê métricas locais de Claude Code (incluindo subagentes), Codex,
+Antigravity e chamadas de `kit.py run`, sem gastar token de modelo nem guardar conversas.
 
 ```bash
-python kit.py custo --desde 2026-11-16 --por task
-python kit.py custo --por modelo --json
-python kit.py custo --verificar-orcamento <pasta-do-projeto>
+python kit.py cost --since 2026-11-16 --by task
+python kit.py cost --by model --json
 python kit.py cost --check-budget <pasta-do-projeto>
 ```
 
-Use `--por task`, `modelo`, `agente` ou `papel`. A task vem da branch ou da pasta
-(`BL-<sigla>-<número>`); chamadas diretas aceitam `executar --task ID`. Sem ID, fica
+Use `--by task`, `model`, `agent`, `role` ou `day`. A task vem da branch ou da pasta
+(`BL-<sigla>-<número>`); chamadas diretas aceitam `run --task ID`. Sem ID, fica
 `(sem task)`. O filtro de data inclui a sessão inteira se houve atividade no período.
 Entrada inclui cache; as colunas de cache são detalhamento, não tokens adicionais.
 O Claude é deduplicado por requestId (ou message.id), contando uma vez o uso mais recente
@@ -102,7 +101,7 @@ O registro do kit fica em `~/.kit-ia/uso.jsonl`. Os diretórios podem ser trocad
 `KIT_IA_HOME`, `KIT_IA_CLAUDE_DIR`, `KIT_IA_CODEX_DIR` e `KIT_IA_ANTIGRAVITY_DIR`.
 Falha ao gravar uso ou telemetria inválida avisa sem impedir a execução da skill.
 
-`--verificar-orcamento` lê `.kit-ia/projeto.yaml` da pasta indicada (ou um arquivo YAML),
+`--check-budget` lê `.kit-ia/projeto.yaml` da pasta indicada (ou um arquivo YAML),
 filtra registros de dentro do projeto e das worktrees do mesmo repositório registradas pelo
 Git, e compara tokens e minutos de cada task com
 `orcamento.por_task`. Sai com 1 listando os excessos ou as tasks com "medição incompleta";
@@ -114,7 +113,7 @@ comentários; sintaxe não suportada gera erro com a linha.
 ## Relatório do lote
 
 ```bash
-python kit.py custo --lote BL-LU-12,BL-LU-13
+python kit.py cost --batch BL-LU-12,BL-LU-13
 ```
 
 Formato de saída (valores apenas ilustrativos):

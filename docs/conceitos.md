@@ -17,7 +17,7 @@ em volta dele. Este kit organiza essas peças para que elas não dependam de um 
 | **Configuração do projeto** | Branches, destinos, gates, comandos, orçamento | Sempre | Sim (YAML) | `.kit-ia/projeto.yaml` |
 | **Hooks** | Comando que roda **sempre** num evento | Em todo evento configurado | Hooks de Git sim; hooks de agente não | hooks de Git (ainda não implementado) |
 | **Permissões** | O que roda sem perguntar | Sempre | Não (cada agente tem o seu) | fora do kit, por enquanto |
-| **Modelo** | O "cérebro" | | Trocável | `kit.py executar` + `.env` |
+| **Modelo** | O "cérebro" | | Trocável | `kit.py run` + `.env` |
 
 ### Instruções vs skill vs MCP vs hook
 
@@ -64,7 +64,7 @@ ajuste `config/agentes.json`.
 
 MCP global verificado em 2026-11-16 (Codex 0.167, agy 1.4.2): na medição, o Codex ignorou
 o `.codex/config.toml` do projeto mesmo com o projeto confiável; o Antigravity também carregou
-MCP apenas globalmente. O kit mostra os comandos em `instalar <projeto>` e só oferece executá-los
+MCP apenas globalmente. O kit mostra os comandos em `install <projeto>` e só oferece executá-los
 com `--mcp-global`, mediante resposta `s`. Cabeçalhos no Codex exigem configuração à mão.
 O sandbox do Codex no Windows não lê `AppData\Local\Temp`: use uma pasta temporária acessível
 na área de trabalho, configurada em TEMP/TMP.
@@ -86,7 +86,7 @@ Por que o kit escreve `CLAUDE.md` com `@AGENTS.md` em vez de confiar que o Claud
 - **Dentro de um agente:** o modelo é escolhido no próprio agente. OpenCode, Kilo, Cursor e Copilot
   aceitam vários provedores; Claude Code usa modelos Claude; Codex usa modelos OpenAI.
   Como skills, AGENTS.md e MCP são padrões abertos, trocar de agente não exige reescrever nada.
-- **Fora de um agente:** `python kit.py executar <skill>` envia a skill como instrução de sistema
+- **Fora de um agente:** `python kit.py run <skill>` envia a skill como instrução de sistema
   para qualquer API. Dois formatos cobrem quase todo provedor:
   - `openai` → `POST {url}/chat/completions` (Ollama, OpenRouter, OpenAI, Gemini, LM Studio, vLLM);
   - `anthropic` → `POST {url}/messages` (API nativa do Claude).

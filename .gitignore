@@ -5,7 +5,7 @@
 __pycache__/
 *.pyc
 
-# Cópias geradas pelo `python kit.py instalar .` neste próprio repositório:
+# Cópias geradas pelo `python kit.py install .` neste próprio repositório:
 # a fonte da verdade é skills/ e config/mcp.json
 /.claude/skills/
 /.agents/

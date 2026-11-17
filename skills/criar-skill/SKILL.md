@@ -44,11 +44,11 @@ e quais erros já aconteceram ao fazê-lo à mão.
 - Nada de segredos na skill.
 
 ## 5. Validar
-- No repositório do kit: `python kit.py nova-skill <nome> --descricao "..."` cria o esqueleto;
-  depois `python kit.py validar`.
+- No repositório do kit: `python kit.py new-skill <nome> --description "..."` cria o esqueleto;
+  depois `python kit.py validate`.
 - Teste em pelo menos **dois agentes ou modelos**: faça um pedido que deveria ativar a skill e um que
   não deveria. Se não ativar, melhore a descrição; se ativar demais, deixe-a mais específica.
-- Para testar a skill num modelo sem agente: `python kit.py executar <nome> --entrada "..."`.
+- Para testar a skill num modelo sem agente: `python kit.py run <nome> --input "..."`.
 
 ## Não fazer
 - Skill que repete o que o modelo já faz bem sem instrução.
