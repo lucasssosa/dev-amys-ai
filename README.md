@@ -106,6 +106,9 @@ O comando lê métricas locais de Claude Code (incluindo subagentes), Codex, Ant
 O filtro `--desde` inclui o total da sessão que teve atividade desde essa data, sem estimar
 uma fração de tokens. Minutos são o intervalo entre a primeira e a última atividade de cada
 sessão; a soma pode incluir sessões simultâneas. O tempo de `executar` é a duração da chamada.
+No Codex, as diferenças entre acumulados são atribuídas ao modelo ativo em cada evento;
+cache e raciocínio não são somados novamente. Os intervalos vão para o modelo do próximo
+evento de uso, e o trecho final fica com o último modelo que consumiu tokens.
 Se há vários modelos numa sessão Claude, cada intervalo é atribuído ao último modelo ativo,
 e o tempo anterior à primeira resposta fica com o primeiro modelo.
 
@@ -116,20 +119,22 @@ O cache já faz parte da entrada normalizada: não some as colunas de cache ao t
 Tokens desconhecidos aparecem como `—`; `*` indica medição parcial.
 
 `executar` registra somente data, protocolo, URL sem credenciais/query, modelo, uso, duração,
-pasta e task em `~/.kit-ia/uso.jsonl`. Falha na gravação apenas emite aviso. Os caminhos são
+pasta e task em `~/.kit-ia/uso.jsonl`. Falha na gravação ou telemetria inválida apenas emite
+aviso, preservando a resposta do modelo. Os caminhos são
 substituíveis por `KIT_IA_HOME`, `KIT_IA_CLAUDE_DIR` (padrão `~/.claude/projects`),
 `KIT_IA_CODEX_DIR` (`~/.codex/sessions`) e `KIT_IA_ANTIGRAVITY_DIR` (`~/.gemini/antigravity`).
 
 O orçamento lê `.kit-ia/projeto.yaml` do projeto indicado, filtra sessões dentro dessa pasta
-e compara cada task com `orcamento.por_task.tokens` e `minutos`. Retorna 1 ao exceder e 0
+e das worktrees registradas pelo Git para o mesmo repositório e compara cada task com
+`orcamento.por_task.tokens` e `minutos`. Retorna 1 ao exceder e 0
 quando não há excesso medido; uso parcial é avisado e não comprova cumprimento do orçamento.
 O leitor aceita mapas indentados/inline, listas simples, strings, números e comentários;
 sintaxe fora desse subconjunto produz erro com a linha. Não interrompe agentes em execução.
 
 Limitações: Antigravity não expõe tokens em campos verificados, e seu tempo cobre apenas
 o último envio até a última alteração. Bancos com acesso restrito podem exigir leitura
-imutável (com aviso de possível ausência do WAL). O acumulado do Codex é atribuído ao último
-modelo quando há troca na sessão; o aviso explicita isso. OpenCode/Kilo ainda não têm leitor.
+imutável (com aviso de possível ausência do WAL). Acumulados regressivos do Codex geram
+aviso e uso parcial, com custo desconhecido. OpenCode/Kilo ainda não têm leitor.
 
 ## Personalizar
 

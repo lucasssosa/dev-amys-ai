@@ -45,14 +45,16 @@ Use `--por task`, `modelo`, `agente` ou `papel`. A task vem da branch ou da past
 (`BL-<sigla>-<número>`); chamadas diretas aceitam `executar --task ID`. Sem ID, fica
 `(sem task)`. O filtro de data inclui a sessão inteira se houve atividade no período.
 Entrada inclui cache; as colunas de cache são detalhamento, não tokens adicionais.
-O Claude é deduplicado por requestId (ou message.id); o Codex usa o último total acumulado,
-sem somar cache ou raciocínio novamente. Se houve troca de modelo no Codex, o acumulado
-é atribuído ao último modelo, com aviso.
+O Claude é deduplicado por requestId (ou message.id); no Codex, diferenças entre totais
+acumulados pertencem ao modelo ativo no evento, sem somar cache ou raciocínio novamente.
+Acumulados regressivos geram aviso e uso parcial, com custo desconhecido.
 
 Minutos são da primeira à última atividade da sessão (incluindo pausas); somas podem conter
 sessões simultâneas. Nas chamadas do kit, mede-se a duração da requisição.
 Em sessões Claude com vários modelos, os intervalos vão para o último
 modelo ativo, com o trecho anterior à primeira resposta atribuído ao primeiro modelo.
+No Codex, cada intervalo vai para o modelo do próximo evento de uso; o trecho final fica
+com o último modelo que consumiu tokens, sem duplicar a duração da sessão.
 Antigravity tem tokens desconhecidos e tempo parcial entre último envio e última alteração: os bancos
 de conversas têm blobs sem formato de uso verificado. Leitura imutável, quando necessária,
 avisa sobre dados possivelmente ainda no WAL. OpenCode/Kilo não têm leitor verificado.
@@ -64,10 +66,11 @@ prioridade. Sem preço ou uso conhecido, mostre `—` (`null` no JSON), nunca in
 
 O registro do kit fica em `~/.kit-ia/uso.jsonl`. Os diretórios podem ser trocados por
 `KIT_IA_HOME`, `KIT_IA_CLAUDE_DIR`, `KIT_IA_CODEX_DIR` e `KIT_IA_ANTIGRAVITY_DIR`.
-Falha ao gravar uso avisa sem impedir a execução da skill.
+Falha ao gravar uso ou telemetria inválida avisa sem impedir a execução da skill.
 
 `--verificar-orcamento` lê `.kit-ia/projeto.yaml` da pasta indicada (ou um arquivo YAML),
-filtra registros de dentro do projeto e compara tokens e minutos de cada task com
+filtra registros de dentro do projeto e das worktrees do mesmo repositório registradas pelo
+Git, e compara tokens e minutos de cada task com
 `orcamento.por_task`. Sai com 1 listando os excessos, ou 0 sem excesso medido. Não interrompe
 agentes nem consulta o registro de estados das tasks (ainda não implementado).
 O leitor suporta mapas por indentação, mapas inline, listas simples, strings, números e

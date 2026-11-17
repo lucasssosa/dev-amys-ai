@@ -54,7 +54,10 @@ def uso_resposta(resposta: dict, protocolo: str) -> dict:
     else:
         entrada = uso.get("prompt_tokens", resposta.get("prompt_eval_count"))
         saida = uso.get("completion_tokens", resposta.get("eval_count"))
-        leitura = (uso.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+        detalhes = uso.get("prompt_tokens_details")
+        if detalhes is not None and not isinstance(detalhes, dict):
+            raise ValueError("telemetria inválida: prompt_tokens_details precisa ser um mapa")
+        leitura = (detalhes or {}).get("cached_tokens", 0)
         escrita = 0
     return {"entrada": numero(entrada), "saida": numero(saida),
             "cache_leitura": numero(leitura), "cache_escrita": numero(escrita),
@@ -163,7 +166,8 @@ def ler_codex(pasta: Path, avisos: list) -> list:
     for arquivo in sorted(pasta.rglob("*.jsonl")):
         primeira = ultima = None
         local = branch = modelo = ""
-        papel, uso, modelos = "principal", None, set()
+        papel, anterior, grupos = "principal", {}, {}
+        atividades = []
         for linha in linhas_json(arquivo, avisos):
             instante = data(linha.get("timestamp"))
             if instante:
@@ -180,19 +184,58 @@ def ler_codex(pasta: Path, avisos: list) -> list:
             elif linha.get("type") == "turn_context":
                 local = carga.get("cwd", local)
                 modelo = carga.get("model", modelo)
-                modelos.add(modelo)
             elif linha.get("type") == "event_msg" and carga.get("type") == "token_count":
                 total = (carga.get("info") or {}).get("total_token_usage")
-                if total:
-                    uso = total
-        if uso:
-            registros.append(registro("codex", modelo, papel, local, branch, primeira, ultima,
-                                      {"entrada": numero(uso.get("input_tokens")),
-                                       "saida": numero(uso.get("output_tokens")),
-                                       "cache_leitura": numero(uso.get("cached_input_tokens", 0))}))
-            if len(modelos) > 1:
-                avisos.append(f"{arquivo.name}: total acumulado atribuído ao último modelo do Codex")
+                if isinstance(total, dict) and total:
+                    # O acumulado inclui os modelos anteriores; só o delta pertence ao atual.
+                    deltas = {}
+                    for destino, origem in (("entrada", "input_tokens"), ("saida", "output_tokens"),
+                                            ("cache_leitura", "cached_input_tokens")):
+                        valor = numero(total.get(origem, 0 if destino == "cache_leitura" else None))
+                        previo = anterior.get(destino, 0)
+                        delta = valor - previo if valor is not None and previo is not None else None
+                        if delta is not None and delta < 0:
+                            delta = None
+                            avisos.append(f"{arquivo.name}: acumulado Codex regrediu; uso parcial")
+                        deltas[destino] = delta
+                        anterior[destino] = valor
+                    if any(valor != 0 for valor in deltas.values()) or not grupos:
+                        if modelo not in grupos:
+                            grupos[modelo] = registro("codex", modelo, papel, local, branch, None, None,
+                                                      {"entrada": 0, "saida": 0}, minutos=0)
+                        grupo = grupos[modelo]
+                        grupo["custo_confiavel"] = grupo.get("custo_confiavel", True) and all(
+                            valor is not None for valor in deltas.values())
+                        for campo, valor in deltas.items():
+                            grupo[campo] = None if valor is None or grupo[campo] is None else grupo[campo] + valor
+                        atividades.append((modelo, instante))
+        # Cada intervalo vai para o modelo do próximo evento de uso; a cauda fica com o último.
+        anterior_instante = primeira
+        for nome, instante in atividades:
+            if instante and anterior_instante:
+                grupos[nome]["minutos"] += max(0, (instante - anterior_instante).total_seconds() / 60)
+                anterior_instante = max(anterior_instante, instante)
+        if atividades and ultima and anterior_instante:
+            grupos[atividades[-1][0]]["minutos"] += max(0, (ultima - anterior_instante).total_seconds() / 60)
+        for grupo in grupos.values():
+            grupo["inicio"], grupo["fim"] = primeira, ultima
+        registros.extend(grupos.values())
     return registros
+
+
+def raizes_projeto(pasta: Path) -> list[Path]:
+    """Inclui apenas worktrees registradas pelo Git do próprio projeto."""
+    try:
+        resultado = subprocess.run(["git", "-C", str(pasta), "worktree", "list", "--porcelain", "-z"],
+                                   capture_output=True, text=True, encoding="utf-8", timeout=5, check=False)
+        if resultado.returncode:
+            return [pasta]
+        raizes = [Path(campo[len("worktree "):]).resolve() for campo in resultado.stdout.split("\0")
+                  if campo.startswith("worktree ")]
+        # Uma subpasta de outro repositório não herda as worktrees dele.
+        return raizes if pasta in raizes else [pasta]
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return [pasta]
 
 
 def ler_antigravity(pasta: Path, avisos: list) -> list:
@@ -258,6 +301,8 @@ def coletar() -> tuple[list, list]:
 def calcular_custo(item: dict, precos: dict):
     if item.get("custo_usd") is not None:
         return item["custo_usd"]
+    if item.get("custo_confiavel") is False:
+        return None
     preco = precos.get(item["modelo"])
     if not preco or item["entrada"] is None or item["saida"] is None:
         return None
@@ -300,6 +345,7 @@ def agrupar(registros: list, por: str, precos: dict) -> list:
 def separar(texto: str, delimitador: str) -> list[str]:
     """Separa apenas fora de aspas e coleções, preservando comentários dentro de strings."""
     partes, inicio, pilha, aspas, escape = [], 0, [], "", False
+    inicio_escalar = True
     for indice, caractere in enumerate(texto):
         if aspas:
             if escape:
@@ -307,14 +353,20 @@ def separar(texto: str, delimitador: str) -> list[str]:
             elif caractere == "\\" and aspas == '"':
                 escape = True
             elif caractere == aspas:
-                aspas = ""
-        elif caractere in "\"'":
+                if aspas == "'" and indice + 1 < len(texto) and texto[indice + 1] == "'":
+                    escape = True  # Duas aspas simples representam um apóstrofo no YAML.
+                else:
+                    aspas = ""
+        elif caractere in "\"'" and inicio_escalar:
             aspas = caractere
+            inicio_escalar = False
         elif caractere in "[{":
             pilha.append(caractere)
+            inicio_escalar = True
         elif caractere in "]}":
             if not pilha or (pilha.pop(), caractere) not in (("[", "]"), ("{", "}")):
                 raise ValueError("coleção mal fechada")
+            inicio_escalar = False
         elif caractere == delimitador and not pilha:
             if delimitador == "#" and indice and not texto[indice - 1].isspace():
                 continue
@@ -322,6 +374,13 @@ def separar(texto: str, delimitador: str) -> list[str]:
             inicio = indice + 1
             if delimitador == "#":
                 return partes
+            inicio_escalar = True
+        elif caractere in ":,":
+            inicio_escalar = True
+        elif not caractere.isspace():
+            # O hífen de uma lista não faz parte do escalar que vem depois.
+            if not (inicio_escalar and caractere == "-" and texto[indice + 1:indice + 2].isspace()):
+                inicio_escalar = False
     if aspas or pilha:
         raise ValueError("aspas ou coleção sem fechamento")
     return partes + [texto[inicio:].strip()]

@@ -10,6 +10,10 @@
   leitor do subconjunto YAML do projeto, sem dependências externas.
 - Tokens desconhecidos e limitações dos formatos locais são explicitados, sem estimativas
   de preço; OpenCode/Kilo ainda não têm leitor.
+- Orçamento inclui worktrees do mesmo repositório sem incluir outros projetos; troca de
+  modelo no Codex distribui diferenças dos acumulados para calcular o custo por modelo.
+- Telemetria opcional malformada emite aviso e preserva a resposta de `executar`;
+  o leitor YAML aceita apóstrofos em strings sem aspas, como `D'Avila`.
 
 ## [0.1.2] - 2026-11-17
 

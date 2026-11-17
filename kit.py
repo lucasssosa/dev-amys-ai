@@ -656,7 +656,9 @@ def chamar_modelo(cfg: dict, sistema: str, entrada: str, task=None) -> str:
     def registrar(resposta):
         try:
             custo.registrar_uso(cfg, resposta, inicio, time.monotonic() - relogio, task)
-        except (OSError, ValueError, TypeError):
+        except ValueError:
+            print("aviso: telemetria de uso inválida; registro não gravado", file=sys.stderr)
+        except (OSError, TypeError):
             print("aviso: não foi possível gravar o registro de uso", file=sys.stderr)
 
     def requisitar(*argumentos):
@@ -764,9 +766,10 @@ def cmd_custo(args) -> int:
         raiz_projeto = projeto if projeto.is_dir() else projeto.parent
         if raiz_projeto.name == PASTA_NO_PROJETO:
             raiz_projeto = raiz_projeto.parent
+        raizes = custo.raizes_projeto(raiz_projeto)
         def do_projeto(item):
             try:
-                return Path(item["pasta"]).resolve().is_relative_to(raiz_projeto)
+                return any(Path(item["pasta"]).resolve().is_relative_to(raiz) for raiz in raizes)
             except (OSError, ValueError):
                 return False
         registros = [item for item in registros if do_projeto(item)]

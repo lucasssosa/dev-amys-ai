@@ -4,6 +4,7 @@ import io
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -90,13 +91,55 @@ class MedicaoTest(unittest.TestCase):
         self.assertEqual(sum(item["minutos"] for item in grupos), 4)
         self.assertEqual({item["modelo"]: item["minutos"] for item in grupos}, {"primeiro": 2, "segundo": 2})
 
-    def test_codex_modelo_muda_avisa_e_atribui_ultimo(self):
+    def test_codex_troca_sem_novo_uso_preserva_modelo_que_consumiu(self):
         arquivo = self.codex()
         with arquivo.open("a", encoding="utf-8") as fluxo:
             fluxo.write(json.dumps({"type": "turn_context", "payload": {"model": "outro"}}) + "\n")
         registros, avisos = custo.coletar()
-        self.assertEqual(registros[0]["modelo"], "outro")
-        self.assertIn("último modelo", avisos[0])
+        self.assertEqual(registros[0]["modelo"], "modelo")
+        self.assertEqual(registros[0]["entrada"], 100)
+        self.assertFalse(avisos)
+
+    def test_codex_distribui_deltas_por_modelo_e_calcula_custo_correto(self):
+        linhas = [{"type": "session_meta", "timestamp": "2026-11-16T10:00:00Z",
+                   "payload": {"cwd": str(self.raiz), "git": {"branch": "task/BL-LU-3"}}}]
+        for minuto, modelo, entrada in ((1, "primeiro", 100), (2, "segundo", 120),
+                                       (3, "segundo", 120), (4, "primeiro", 150)):
+            linhas.extend([
+                {"type": "turn_context", "payload": {"model": modelo}},
+                {"type": "event_msg", "timestamp": f"2026-11-16T10:0{minuto}:00Z", "payload": {
+                    "type": "token_count", "info": {"total_token_usage": {
+                        "input_tokens": entrada, "output_tokens": 0, "cached_input_tokens": 0}}}},
+            ])
+        arquivo = self.gravar("codex/a.jsonl", linhas[:5])
+        precos = {"primeiro": {"entrada": 1}, "segundo": {"entrada": 10}}
+        registros, avisos = custo.coletar()
+        grupos = custo.agrupar(registros, "modelo", precos)
+        self.assertEqual({item["modelo"]: item["tokens"] for item in grupos}, {"primeiro": 100, "segundo": 20})
+        self.assertAlmostEqual(sum(item["custo_usd"] for item in grupos), .0003)
+        self.assertEqual(sum(item["minutos"] for item in grupos), 2)
+        self.assertEqual(custo.agrupar(registros, "task", precos)[0]["tokens"], 120)
+        self.assertFalse(avisos)
+        # Repetição do mesmo acumulado e retorno ao primeiro modelo não duplicam uso.
+        arquivo.write_text("\n".join(json.dumps(linha) for linha in linhas), encoding="utf-8")
+        grupos = custo.agrupar(custo.coletar()[0], "modelo", precos)
+        self.assertEqual({item["modelo"]: item["tokens"] for item in grupos}, {"primeiro": 130, "segundo": 20})
+        self.assertEqual(sum(item["minutos"] for item in grupos), 4)
+
+    def test_codex_acumulado_regredido_tem_uso_e_custo_desconhecidos(self):
+        for total in ({"input_tokens": 2, "output_tokens": 1, "cached_input_tokens": 40},
+                      {"input_tokens": 110, "output_tokens": 10, "cached_input_tokens": 30}):
+            with self.subTest(total=total):
+                arquivo = self.codex()
+                with arquivo.open("a", encoding="utf-8") as fluxo:
+                    fluxo.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count",
+                        "info": {"total_token_usage": total}}}) + "\n")
+                registros, avisos = custo.coletar()
+                grupo = custo.agrupar(registros, "task", {"modelo": {
+                    "entrada": 1, "saida": 1, "cache_leitura": 1}})[0]
+                self.assertTrue(grupo["parcial"])
+                self.assertIsNone(grupo["custo_usd"])
+                self.assertTrue(any("regrediu" in aviso for aviso in avisos))
 
     def test_claude_tempo_usa_extremos_mesmo_com_eventos_fora_de_ordem(self):
         self.gravar("claude/a.jsonl", [
@@ -168,6 +211,41 @@ class MedicaoTest(unittest.TestCase):
         self.assertIn("Maior fonte de gasto: codex", saida)
         self.assertNotIn("BL-LU-3 |", self.rodar("--lote", "BL-LU-4")[1])
 
+    def test_orcamento_inclui_worktrees_irmas_e_exclui_outro_projeto(self):
+        principal = self.raiz / "projeto com espaços"
+        worktree = self.raiz / "worktrees/BL-LU-3"
+        outro = self.raiz / "outro"
+        for raiz in (principal, worktree):
+            configuracao = raiz / ".kit-ia/projeto.yaml"
+            configuracao.parent.mkdir(parents=True)
+            configuracao.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+        self.gravar("kit/uso.jsonl", [
+            {"pasta": str(local), "task": task, "entrada": tokens, "saida": 0,
+             "data": "2026-11-16T10:00:00Z", "duracao_segundos": 0}
+            for local, task, tokens in ((worktree / "src", "BL-LU-3", 500000),
+                                       (outro, "BL-LU-4", 900000))])
+        saida_git = f"worktree {principal}\0HEAD a\0branch refs/heads/main\0\0worktree {worktree}\0HEAD b\0\0"
+        resultado = subprocess.CompletedProcess([], 0, stdout=saida_git, stderr="")
+        with patch("custo.subprocess.run", return_value=resultado) as executar:
+            for caminho in (principal, worktree, principal / ".kit-ia/projeto.yaml"):
+                with self.subTest(caminho=caminho):
+                    codigo, saida, _ = self.rodar("--verificar-orcamento", str(caminho), "--json")
+                    dados = json.loads(saida)
+                    self.assertEqual(codigo, 1)
+                    self.assertEqual([grupo["task"] for grupo in dados["grupos"]], ["BL-LU-3"])
+                    self.assertEqual(dados["grupos"][0]["tokens"], 500000)
+                    self.assertEqual(len(dados["estouros"]), 1)
+            self.assertEqual(executar.call_args.args[0],
+                             ["git", "-C", str(principal), "worktree", "list", "--porcelain", "-z"])
+
+    def test_raizes_sem_git_e_subpasta_nao_incluem_outros_projetos(self):
+        with patch("custo.subprocess.run", side_effect=FileNotFoundError):
+            self.assertEqual(custo.raizes_projeto(self.raiz), [self.raiz])
+        resultado = subprocess.CompletedProcess([], 0, stdout=f"worktree {self.raiz}\0\0", stderr="")
+        subpasta = self.raiz / "subprojeto"
+        with patch("custo.subprocess.run", return_value=resultado):
+            self.assertEqual(custo.raizes_projeto(subpasta), [subpasta])
+
     def test_erros_esperados_sem_stack_trace(self):
         self.assertEqual(self.rodar("--desde", "ontem")[0], 1)
         projeto = self.raiz / "projeto.yaml"
@@ -218,6 +296,22 @@ class MedicaoTest(unittest.TestCase):
 
 
 class YamlTest(unittest.TestCase):
+    def test_apostrofo_em_escalar_sem_aspas_e_aspas_delimitadoras(self):
+        dados = custo.ler_yaml('''nome: D'Avila # comentário
+lista: [D'Avila, "D'Avila # nome", 'D''Avila: nome']
+mapa: {sobrenome: D'Avila}
+nomes:
+  - D'Avila
+  - 'D''Avila # nome'
+''')
+        self.assertEqual(dados["nome"], "D'Avila")
+        self.assertEqual(dados["lista"], ["D'Avila", "D'Avila # nome", "D'Avila: nome"])
+        self.assertEqual(dados["mapa"], {"sobrenome": "D'Avila"})
+        self.assertEqual(dados["nomes"], ["D'Avila", "D'Avila # nome"])
+        for texto in ("nome: 'D'Avila", 'nome: "D\'Avila', "nomes:\n  - 'D'Avila"):
+            with self.subTest(texto=texto), self.assertRaisesRegex(ValueError, "linha [12]:"):
+                custo.ler_yaml(texto)
+
     def test_template_real(self):
         projeto = kit.ler_projeto(kit.RAIZ / "templates/projeto.yaml")
         self.assertEqual(projeto["orcamento"]["por_task"], {"tokens": 400000, "minutos": 30})

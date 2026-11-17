@@ -501,6 +501,8 @@ class ProvedorFalso(BaseHTTPRequestHandler):
         else:
             resposta = {"usage": {"prompt_tokens": 30, "completion_tokens": 10, "cost": .001},
                         "choices": [{"message": {"content": "resposta openai"}}]}
+        if corpo.get("model") == "telemetria-invalida":
+            resposta["usage"]["prompt_tokens_details"] = [1]
         dados = json.dumps(resposta).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -573,6 +575,15 @@ class ExecutarTest(unittest.TestCase):
         self.assertEqual(codigo, 0)
         self.assertIn("resposta openai", saida)
         self.assertIn("aviso:", erro)
+
+    def test_telemetria_malformada_preserva_resposta_valida(self):
+        codigo, saida, erro = rodar("executar", "revisar", "--entrada", "x", "--url", self.url,
+                                    "--modelo", "telemetria-invalida", "--protocolo", "openai")
+        self.assertEqual(codigo, 0)
+        self.assertEqual(saida.strip(), "resposta openai")
+        self.assertIn("aviso: telemetria de uso inválida", erro)
+        self.assertNotIn("Traceback", erro)
+        self.assertFalse((Path(self.temporaria.name) / "uso.jsonl").exists())
 
     def test_custo_cli_sem_fontes_e_erro_de_data(self):
         with unittest.mock.patch("kit.custo.coletar", return_value=([], [])):
