@@ -1278,6 +1278,23 @@ class DesinstalarTest(unittest.TestCase):
 
 
 class InterfaceInglesTest(unittest.TestCase):
+    def test_documentacao_e_configuracao_nao_citam_comandos_antigos(self):
+        arquivos = (".github/workflows/testes.yml", "docs/conceitos.md", ".env.exemplo", ".gitignore")
+        for arquivo in arquivos:
+            texto = (kit.RAIZ / arquivo).read_text(encoding="utf-8")
+            for comando in ("listar", "validar", "instalar", "nova-skill", "executar", "custo", "atualizar"):
+                with self.subTest(arquivo=arquivo, comando=comando):
+                    self.assertNotIn("kit.py " + comando, texto)
+
+    def test_comando_de_validacao_do_workflow_funciona(self):
+        workflow = (kit.RAIZ / ".github/workflows/testes.yml").read_text(encoding="utf-8")
+        comandos = [linha.strip().removeprefix("run: ").split()
+                    for linha in workflow.splitlines() if "run: python kit.py " in linha]
+        self.assertEqual(comandos, [["python", "kit.py", "validate"]])
+        codigo, saida, erro = rodar(*comandos[0][2:])
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("0 problema", saida)
+
     def test_readme_informa_a_versao_atual_da_cli(self):
         readme = (kit.RAIZ / "README.md").read_text(encoding="utf-8")
         self.assertIn(f"Versão atual: **{kit.VERSAO}**", readme)
@@ -1290,19 +1307,28 @@ class InterfaceInglesTest(unittest.TestCase):
                 self.assertEqual(erro.exception.code, 2)
 
     def test_opcoes_antigas_sao_rejeitadas(self):
-        casos = {"install": ["simular", "forcar", "agentes", "sem-mcp"],
-                 "run": ["entrada", "protocolo", "modelo"], "new-skill": ["descricao"],
-                 "cost": ["desde", "ate", "por", "lote", "projeto", "verificar-orcamento"],
-                 "status": ["detalhes"], "": ["versao"]}
+        casos = {"install": [("simular", "dry-run", []), ("forcar", "force", []),
+                             ("agentes", "agents", ["universal"]), ("sem-mcp", "no-mcp", [])],
+                 "run": [("entrada", "input", ["texto"]), ("protocolo", "protocol", ["openai"]),
+                         ("modelo", "model", ["modelo-teste"])],
+                 "new-skill": [("descricao", "description", ["Descrição da skill"])],
+                 "cost": [("desde", "since", ["2026-11-16"]), ("ate", "until", ["2026-11-17"]),
+                          ("por", "by", ["task"]), ("lote", "batch", ["BL-LU-5"]),
+                          ("projeto", "project", ["."]), ("verificar-orcamento", "check-budget", ["."])],
+                 "status": [("detalhes", "details", [])], "": [("versao", "version", [])]}
         for comando, opcoes in casos.items():
-            for opcao in opcoes:
-                argumentos = [comando] if comando else []
+            for opcao, nova, valores in opcoes:
+                argumentos = [comando] if comando else ["list"]
                 if comando in ("run", "new-skill"):
                     argumentos.append("verificar")
-                with self.subTest(opcao=opcao), contextlib.redirect_stderr(io.StringIO()):
+                # Valores válidos impedem que um alias indevido passe por falta de argumento.
+                with self.subTest(opcao=opcao), contextlib.redirect_stderr(io.StringIO()) as saida_erro:
+                    if comando:
+                        kit.montar_parser().parse_args([*argumentos, "--" + nova, *valores])
                     with self.assertRaises(SystemExit) as erro:
-                        kit.montar_parser().parse_args([*argumentos, "--" + opcao])
+                        kit.montar_parser().parse_args([*argumentos, "--" + opcao, *valores])
                     self.assertEqual(erro.exception.code, 2)
+                    self.assertIn("unrecognized arguments: --" + opcao, saida_erro.getvalue())
 
     def test_custo_agrupa_em_ingles_sem_traduzir_chaves_dos_dados(self):
         inicio = kit.custo.data("2026-11-16T10:00:00Z")

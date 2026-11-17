@@ -55,6 +55,8 @@ As opções abaixo recebem o prefixo `--` em ambos os nomes:
 
 ### Corrigido
 
+- Workflow de testes, exemplo de ambiente, comentário do Git e conceitos usam os
+  comandos em inglês, completando a migração e restaurando a validação no CI.
 - `uninstall` bloqueia reparse points também no Python 3.10/3.11 e confere se o
   destino físico permanece dentro da pasta autorizada antes de remover arquivos.
 - `cost` rejeita projetos divergentes entre `--project` e `--check-budget`, impedindo

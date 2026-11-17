@@ -22,4 +22,4 @@ jobs:
       - name: Testes
         run: python -m unittest discover -s tests -v
       - name: Validar skills, links e config
-        run: python kit.py validar
+        run: python kit.py validate
