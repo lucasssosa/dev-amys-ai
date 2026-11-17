@@ -33,10 +33,16 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 import custo
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 VERSAO = "0.2.0"
 
@@ -423,7 +429,7 @@ def instalar_mcp_global(ex: Execucao, configuracoes: list[dict], servidores: dic
             ex.mudancas += 1
 
 
-def cmd_instalar(args) -> int:
+def instalar(args) -> Execucao:
     agentes = selecionar_agentes(lista_csv(args.agentes))
     skills = selecionar_skills(lista_csv(args.skills))
     ex = Execucao(args.simular)
@@ -500,9 +506,207 @@ def cmd_instalar(args) -> int:
             if globais:
                 instalar_mcp_global(ex, globais, servidores, args.mcp_global)
 
+        if not args.simular:
+            registrar_projeto(base, list(agentes), lista_csv(args.skills), args.sem_mcp)
+
     verbo = "seriam feitas" if args.simular else "feitas"
     print(f"\n{ex.mudancas} mudança(s) {verbo}, {ex.avisos} aviso(s).")
+    return ex
+
+
+def cmd_instalar(args) -> int:
+    instalar(args)
     return 0
+
+
+# =============================================================== projetos / atualização
+
+def arquivo_projetos() -> Path:
+    return custo.pasta_env("KIT_IA_HOME", Path.home() / ".kit-ia") / "projetos.json"
+
+
+@contextmanager
+def bloquear_projetos():
+    caminho = arquivo_projetos().with_suffix(".lock")
+    try:
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        # O arquivo permanece: apagá-lo permitiria bloquear arquivos diferentes para o
+        # mesmo registro. O SO libera o bloqueio mesmo se o processo for interrompido.
+        with caminho.open("a+b") as trava:
+            if os.name == "nt":
+                msvcrt.locking(trava.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(trava.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    msvcrt.locking(trava.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(trava.fileno(), fcntl.LOCK_UN)
+    except OSError as erro:
+        raise ErroKit(f"não consegui acessar o bloqueio do registro {caminho}: {erro}") from erro
+
+
+def carregar_projetos() -> dict:
+    caminho = arquivo_projetos()
+    try:
+        if not caminho.exists():
+            return {}
+        projetos = ler_json(caminho)
+        if not isinstance(projetos, dict):
+            raise ErroKit(f"{caminho}: o registro precisa ser um mapa de caminhos absolutos")
+        for pasta, dados in projetos.items():
+            if (not Path(pasta).is_absolute() or not isinstance(dados, dict)
+                    or not isinstance(dados.get("agentes"), list) or not dados["agentes"]
+                    or not all(isinstance(nome, str) for nome in dados["agentes"])
+                    or (dados.get("skills") is not None and (
+                        not isinstance(dados["skills"], list)
+                        or not all(isinstance(nome, str) for nome in dados["skills"])))
+                    or not isinstance(dados.get("sem_mcp", False), bool)):
+                raise ErroKit(f"{caminho}: entrada inválida para {pasta}")
+        return projetos
+    except (OSError, UnicodeError) as erro:
+        raise ErroKit(f"não consegui ler {caminho}: {erro}") from erro
+
+
+def salvar_projetos(projetos: dict):
+    caminho = arquivo_projetos()
+    try:
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        # Trocar o arquivo completo evita deixar JSON truncado se a gravação falhar.
+        temporario = caminho.with_suffix(".tmp")
+        temporario.write_text(json.dumps(projetos, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporario.replace(caminho)
+    except (OSError, UnicodeError) as erro:
+        raise ErroKit(f"não consegui gravar {caminho}: {erro}") from erro
+
+
+def registrar_projeto(base: Path, agentes: list[str], skills: list[str] | None, sem_mcp: bool):
+    # Bloquear só a escrita ainda perderia entradas lidas por instalações concorrentes.
+    with bloquear_projetos():
+        projetos = carregar_projetos()
+        projetos[str(base)] = {"agentes": agentes, "versao": VERSAO,
+                               "data": datetime.now(timezone.utc).isoformat(),
+                               "skills": skills, "sem_mcp": sem_mcp}
+        salvar_projetos(projetos)
+
+
+def pendencias_projeto(base: Path, registro: dict | None) -> tuple[str, list[str]]:
+    pasta_kit = base / PASTA_NO_PROJETO
+    arquivo_versao = pasta_kit / "VERSAO"
+    versao = arquivo_versao.read_text(encoding="utf-8").strip() if arquivo_versao.is_file() else "ausente"
+    pendencias = []
+    if versao != VERSAO:
+        pendencias.append(f"versão instalada {versao}; atual {VERSAO}")
+
+    agentes = selecionar_agentes(registro["agentes"] if registro else None)
+    skills = selecionar_skills(registro.get("skills") if registro else None)
+    copias = {pasta_kit / nome: RAIZ / nome for nome in PASTAS_COPIADAS}
+    destinos = {base / cfg["skills"] for cfg in agentes.values() if cfg.get("skills")}
+    copias.update((destino / skill.name, skill) for destino in destinos for skill in skills)
+    # Uma seleção menor não apaga cópias anteriores; o marcador continua atribuindo-as
+    # ao kit, inclusive nos destinos dos agentes que deixaram de ser selecionados.
+    todos_destinos = {base / cfg["skills"] for cfg in carregar_agentes().values() if cfg.get("skills")}
+    for destino in sorted(todos_destinos):
+        if destino.is_dir():
+            for copia in destino.iterdir():
+                if copia.is_dir() and (copia / MARCADOR).is_file():
+                    copias.setdefault(copia, PASTA_SKILLS / copia.name)
+    for copia, fonte in sorted(copias.items()):
+        relativo = copia.relative_to(base).as_posix()
+        if not copia.exists():
+            # Sem registro, só é possível atribuir ao kit pastas com o marcador.
+            if registro or copia.parent == pasta_kit:
+                pendencias.append(f"cópia ausente: {relativo}")
+        elif (copia / MARCADOR).is_file():
+            if not fonte.is_dir() or not pastas_iguais(fonte, copia):
+                pendencias.append(f"cópia desatualizada: {relativo}")
+        elif registro or copia.parent == pasta_kit:
+            pendencias.append(f"pasta do usuário, mantida: {relativo}")
+
+    try:
+        modelo = ler_projeto(PASTA_TEMPLATES / "projeto.yaml")
+        configuracao = ler_projeto(base)
+        for chave, valor in modelo.items():
+            if chave not in configuracao:
+                pendencias.append(f"chave ausente no projeto.yaml: {chave}")
+            elif isinstance(valor, dict):
+                existente = configuracao[chave]
+                for subchave in valor:
+                    if not isinstance(existente, dict) or subchave not in existente:
+                        pendencias.append(f"chave ausente no projeto.yaml: {chave}.{subchave}")
+    except ErroKit as erro:
+        pendencias.append(str(erro))
+
+    agents_md = base / "AGENTS.md"
+    if not agents_md.is_file() or REFERENCIA_NUCLEO not in agents_md.read_text(encoding="utf-8"):
+        pendencias.append(f"AGENTS.md não aponta o processo ({REFERENCIA_NUCLEO})")
+    claude_md = base / "CLAUDE.md"
+    if claude_md.exists() or (registro and "claude" in agentes):
+        if not claude_md.is_file() or "@AGENTS.md" not in claude_md.read_text(encoding="utf-8"):
+            pendencias.append("CLAUDE.md não importa o AGENTS.md (@AGENTS.md)")
+    return versao, pendencias
+
+
+def cmd_status(args) -> int:
+    projetos = carregar_projetos()
+    caminhos = [str(Path(args.projeto).expanduser().resolve())] if args.projeto else sorted(projetos)
+    if not caminhos:
+        print("Nenhum projeto registrado.")
+    for caminho in caminhos:
+        base = Path(caminho)
+        if not base.is_dir():
+            print(f"{base}: aviso: pasta inexistente")
+            continue
+        try:
+            versao, pendencias = pendencias_projeto(base, projetos.get(caminho))
+        except (OSError, UnicodeError) as erro:
+            raise ErroKit(f"não consegui inspecionar {base}: {erro}") from erro
+        estado = f"{len(pendencias)} pendência(s)" if pendencias else "em dia"
+        print(f"{base}: instalada {versao}; atual {VERSAO}; {estado}")
+        if args.detalhes:
+            for pendencia in pendencias:
+                print(f"  - {pendencia}")
+    return 0
+
+
+def cmd_atualizar(args) -> int:
+    projetos = carregar_projetos()
+    caminhos = [str(Path(args.projeto).expanduser().resolve())] if args.projeto else sorted(projetos)
+    if args.projeto and caminhos[0] not in projetos:
+        raise ErroKit(f"projeto não registrado: {caminhos[0]}; use instalar primeiro")
+    resumos = []
+    falhas = False
+    for caminho in caminhos:
+        if not Path(caminho).is_dir():
+            acao = "seria removida do registro" if args.simular else "removida do registro"
+            aviso = f"pasta inexistente; {acao}"
+            if not args.simular:
+                with bloquear_projetos():
+                    atuais = carregar_projetos()
+                    # A lista do lote pode anteceder instalações feitas por outro processo.
+                    if not Path(caminho).is_dir():
+                        atuais.pop(caminho, None)
+                        salvar_projetos(atuais)
+                    else:
+                        aviso = "pasta reapareceu; mantida no registro"
+            resumos.append(f"{caminho}: aviso: {aviso}")
+            continue
+        registro = projetos[caminho]
+        opcoes = argparse.Namespace(destino=caminho, global_=False, agentes=",".join(registro["agentes"]),
+                                    skills=",".join(registro["skills"]) if registro.get("skills") else None,
+                                    sem_mcp=registro.get("sem_mcp", False), mcp_global=False,
+                                    forcar=False, simular=args.simular)
+        try:
+            ex = instalar(opcoes)
+            resumos.append(f"{caminho}: {ex.mudancas} mudança(s), {ex.avisos} aviso(s)")
+        except (ErroKit, OSError, UnicodeError) as erro:
+            resumos.append(f"{caminho}: erro: {erro}")
+            falhas = True
+    print("\nResumo da atualização" + (" [simulação]:" if args.simular else ":"))
+    print("\n".join(resumos) if resumos else "Nenhum projeto registrado.")
+    return 1 if falhas else 0
 
 
 # =============================================================== listar / validar / nova-skill
@@ -850,6 +1054,16 @@ def montar_parser() -> argparse.ArgumentParser:
     p.add_argument("--forcar", action="store_true", help="substitui skills e servidores que não são do kit")
     p.add_argument("--simular", action="store_true", help="mostra o que faria, sem escrever nada")
     p.set_defaults(func=cmd_instalar)
+
+    p = sub.add_parser("status", help="mostra versões e pendências dos projetos instalados")
+    p.add_argument("projeto", nargs="?", help="pasta do projeto (padrão: todos os registrados)")
+    p.add_argument("--detalhes", action="store_true", help="lista cópias e chaves pendentes")
+    p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("atualizar", help="reinstala o kit nos projetos registrados, preservando arquivos do usuário")
+    p.add_argument("projeto", nargs="?", help="pasta registrada (padrão: todas)")
+    p.add_argument("--simular", action="store_true", help="mostra o que faria, sem escrever nada")
+    p.set_defaults(func=cmd_atualizar)
 
     p = sub.add_parser("nova-skill", help="cria uma skill nova a partir do modelo")
     p.add_argument("nome", help="nome em kebab-case (ex.: gerar-changelog)")
