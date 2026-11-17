@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0] - 2026-11-17
+
+- Comando `custo` com métricas locais de Claude Code, Codex, Antigravity e `executar`,
+  agrupadas por task, agente, modelo ou papel, em texto, JSON ou Markdown por lote.
+- Registro de uso e duração de `executar`, incluindo `--task`, cache e custo informado pelo
+  provedor, sem guardar prompts ou chaves; falhas na gravação emitem aviso.
+- Tarifas configuráveis em `config/precos.json` e verificação de orçamento por task com
+  leitor do subconjunto YAML do projeto, sem dependências externas.
+- Tokens desconhecidos e limitações dos formatos locais são explicitados, sem estimativas
+  de preço; OpenCode/Kilo ainda não têm leitor.
+
 ## [0.1.2] - 2026-11-17
 
 Primeira versão publicada.

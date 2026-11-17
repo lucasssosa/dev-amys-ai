@@ -30,11 +30,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
-VERSAO = "0.1.2"
+import custo
+
+VERSAO = "0.2.0"
 
 RAIZ = Path(__file__).resolve().parent
 PASTA_SKILLS = RAIZ / "skills"
@@ -645,12 +649,29 @@ def post_json(url: str, corpo: dict, cabecalhos: dict, timeout: float) -> dict:
         ) from erro
 
 
-def chamar_modelo(cfg: dict, sistema: str, entrada: str) -> str:
+def chamar_modelo(cfg: dict, sistema: str, entrada: str, task=None) -> str:
     """Um adaptador por protocolo. Todo provedor cabe em um destes dois formatos."""
+    inicio, relogio = datetime.now(timezone.utc), time.monotonic()
+
+    def registrar(resposta):
+        try:
+            custo.registrar_uso(cfg, resposta, inicio, time.monotonic() - relogio, task)
+        except (OSError, ValueError, TypeError):
+            print("aviso: não foi possível gravar o registro de uso", file=sys.stderr)
+
+    def requisitar(*argumentos):
+        try:
+            resposta = post_json(*argumentos)
+        except ErroKit:
+            registrar({})  # Mesmo sem uso conhecido, a tentativa consumiu tempo.
+            raise
+        registrar(resposta)
+        return resposta
+
     if cfg["protocolo"] == "anthropic":
         if not cfg["chave"]:
             raise ErroKit("defina KIT_IA_CHAVE com a chave da Anthropic (no .env ou no ambiente)")
-        resposta = post_json(
+        resposta = requisitar(
             f"{cfg['url']}/messages",
             {
                 "model": cfg["modelo"],
@@ -667,7 +688,7 @@ def chamar_modelo(cfg: dict, sistema: str, entrada: str) -> str:
         return "\n".join(b["text"] for b in resposta.get("content", []) if b.get("type") == "text")
 
     cabecalhos = {"Authorization": f"Bearer {cfg['chave']}"} if cfg["chave"] else {}
-    resposta = post_json(
+    resposta = requisitar(
         f"{cfg['url']}/chat/completions",
         {
             "model": cfg["modelo"],
@@ -699,10 +720,98 @@ def cmd_executar(args) -> int:
         raise ErroKit('sem entrada: passe --entrada "texto" ou um arquivo, ou envie por pipe (git diff | ...)')
 
     cfg = config_modelo(args)
-    print(f"[kit] skill={args.skill} protocolo={cfg['protocolo']} modelo={cfg['modelo']} url={cfg['url']}", file=sys.stderr)
+    print(f"[kit] skill={args.skill} protocolo={cfg['protocolo']} modelo={cfg['modelo']} url={custo.url_publica(cfg['url'])}", file=sys.stderr)
     sistema = INSTRUCAO_SEM_FERRAMENTAS.format(nome=args.skill, corpo=corpo)
-    print(chamar_modelo(cfg, sistema, entrada))
+    print(chamar_modelo(cfg, sistema, entrada, args.task))
     return 0
+
+
+def ler_projeto(caminho: Path) -> dict:
+    if caminho.is_dir():
+        caminho = caminho / PASTA_NO_PROJETO / "projeto.yaml"
+    try:
+        return custo.ler_yaml(caminho.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as erro:
+        raise ErroKit(f"não consegui ler projeto.yaml: {erro}") from erro
+
+
+def cmd_custo(args) -> int:
+    desde = custo.data(args.desde) if args.desde else None
+    if args.desde and desde is None:
+        raise ErroKit("--desde deve ser uma data ISO, por exemplo 2026-11-16")
+    try:
+        precos = json.loads((RAIZ / "config/precos.json").read_text(encoding="utf-8"))["precos"]
+        if not isinstance(precos, dict) or any(not isinstance(valor, dict) for valor in precos.values()):
+            raise ValueError("precos deve ser um mapa de modelos e tarifas")
+    except (OSError, ValueError, KeyError, TypeError) as erro:
+        raise ErroKit(f"config/precos.json inválido: {erro}") from erro
+    registros, avisos = custo.coletar()
+    if desde:
+        # O filtro inclui a sessão inteira se houve atividade no período; não estima frações de uso.
+        registros = [item for item in registros if item["fim"] and item["fim"] >= desde]
+    lote = [item.strip() for item in args.lote.split(",") if item.strip()] if args.lote else []
+    if lote:
+        registros = [item for item in registros if item["task"] in lote]
+    por = "task" if lote or args.verificar_orcamento else args.por
+    estouros = []
+    if args.verificar_orcamento:
+        projeto = Path(args.verificar_orcamento).resolve()
+        configuracao = ler_projeto(projeto)
+        orcamento = configuracao.get("orcamento")
+        limites = orcamento.get("por_task", {}) if isinstance(orcamento, dict) else {}
+        if not isinstance(limites, dict) or any(custo.numero(limites.get(campo)) is None for campo in ("tokens", "minutos")):
+            raise ErroKit("orcamento.por_task precisa de tokens e minutos numéricos não negativos")
+        raiz_projeto = projeto if projeto.is_dir() else projeto.parent
+        if raiz_projeto.name == PASTA_NO_PROJETO:
+            raiz_projeto = raiz_projeto.parent
+        def do_projeto(item):
+            try:
+                return Path(item["pasta"]).resolve().is_relative_to(raiz_projeto)
+            except (OSError, ValueError):
+                return False
+        registros = [item for item in registros if do_projeto(item)]
+    grupos = custo.agrupar(registros, por, precos)
+    if args.verificar_orcamento:
+        for grupo in grupos:
+            for campo in ("tokens", "minutos"):
+                if grupo[campo] is not None and grupo[campo] > limites[campo]:
+                    estouros.append(f"{grupo['task']}: {campo} {grupo[campo]:.2f} > {limites[campo]}")
+            if grupo["parcial"]:
+                avisos.append(f"{grupo['task']}: orçamento de tokens só verificável parcialmente")
+    if args.json:
+        print(json.dumps({"por": por, "grupos": grupos, "avisos": sorted(set(avisos)), "estouros": estouros},
+                         ensure_ascii=False, indent=2))
+    else:
+        if lote:
+            print(f"Lote: {', '.join(lote)}")
+            print("| Task | Tokens | Tempo (min) | Custo (USD) |")
+            print("| --- | ---: | ---: | ---: |")
+        else:
+            print(f"{por:<24} {'Entrada':>12} {'Saída':>10} {'Cache ler':>12} {'Cache gravar':>12} {'Tokens':>12} {'Minutos':>10} {'USD':>12}")
+        for grupo in grupos:
+            valor = "—" if grupo["custo_usd"] is None else f"{grupo['custo_usd']:.6f}"
+            tokens = (str(grupo["tokens"]) if grupo["tokens"] is not None else "—") + ("*" if grupo["parcial"] else "")
+            if lote:
+                print(f"| {grupo[por]} | {tokens} | {grupo['minutos']:.2f} | {valor} |")
+            else:
+                campos = [str(grupo[campo]) if grupo[campo] is not None else "—" for campo in
+                          ("entrada", "saida", "cache_leitura", "cache_escrita")]
+                print(f"{grupo[por]:<24} {campos[0]:>12} {campos[1]:>10} {campos[2]:>12} "
+                      f"{campos[3]:>12} {tokens:>12} {grupo['minutos']:>10.2f} {valor:>12}")
+        if lote:
+            fontes = custo.agrupar(registros, "agente", precos)
+            if fontes:
+                conhecidas = [item for item in fontes if item["custo_usd"] is not None]
+                maior = max(conhecidas, key=lambda item: item["custo_usd"]) if len(conhecidas) == len(fontes) else fontes[0]
+                criterio = "USD" if len(conhecidas) == len(fontes) else "tokens; preços incompletos"
+                print(f"Maior fonte de gasto: {maior['agente']} ({criterio}).")
+        if not grupos:
+            print("Nenhum uso encontrado para os filtros.")
+        for aviso in sorted(set(avisos)):
+            print(f"aviso: {aviso}", file=sys.stderr)
+        for estouro in estouros:
+            print(f"ORÇAMENTO EXCEDIDO: {estouro}")
+    return 1 if estouros else 0
 
 
 # =============================================================== CLI
@@ -737,7 +846,16 @@ def montar_parser() -> argparse.ArgumentParser:
     p.add_argument("--protocolo", choices=["openai", "anthropic"])
     p.add_argument("--url", help="base da API (ex.: http://localhost:11434/v1)")
     p.add_argument("--modelo")
+    p.add_argument("--task", help="ID da task; sem isso, detecta pela branch ou pasta")
     p.set_defaults(func=cmd_executar)
+
+    p = sub.add_parser("custo", help="mede uso local por task, modelo, agente e papel, sem chamar modelos")
+    p.add_argument("--desde", help="inclui sessões com atividade desde a data ISO")
+    p.add_argument("--por", choices=["task", "modelo", "agente", "papel"], default="task")
+    p.add_argument("--lote", help="IDs separados por vírgula; produz tabela Markdown")
+    p.add_argument("--verificar-orcamento", metavar="PROJETO", help="confere orcamento.por_task do projeto")
+    p.add_argument("--json", action="store_true", help="saída estruturada para programas")
+    p.set_defaults(func=cmd_custo)
     return parser
 
 

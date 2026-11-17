@@ -496,10 +496,11 @@ class ProvedorFalso(BaseHTTPRequestHandler):
         if corpo.get("model") == "recusa":
             resposta = {"stop_reason": "refusal", "stop_details": {"category": "teste"}, "content": []}
         elif self.path.endswith("/messages"):
-            resposta = {"stop_reason": "end_turn", "content": [
+            resposta = {"usage": {"input_tokens": 20, "output_tokens": 8}, "stop_reason": "end_turn", "content": [
                 {"type": "thinking", "thinking": ""}, {"type": "text", "text": "resposta anthropic"}]}
         else:
-            resposta = {"choices": [{"message": {"content": "resposta openai"}}]}
+            resposta = {"usage": {"prompt_tokens": 30, "completion_tokens": 10, "cost": .001},
+                        "choices": [{"message": {"content": "resposta openai"}}]}
         dados = json.dumps(resposta).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -512,6 +513,13 @@ class ProvedorFalso(BaseHTTPRequestHandler):
 
 
 class ExecutarTest(unittest.TestCase):
+    def setUp(self):
+        self.temporaria = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporaria.cleanup)
+        self.ambiente = unittest.mock.patch.dict(os.environ, {"KIT_IA_HOME": self.temporaria.name})
+        self.ambiente.start()
+        self.addCleanup(self.ambiente.stop)
+
     @classmethod
     def setUpClass(cls):
         cls.servidor = HTTPServer(("127.0.0.1", 0), ProvedorFalso)
@@ -544,11 +552,43 @@ class ExecutarTest(unittest.TestCase):
         self.assertEqual(req["cabecalhos"]["x-api-key"], "chave-teste")
         self.assertIn("# Planejar uma mudança", req["corpo"]["system"])
 
+    def test_registra_uso_dos_protocolos_sem_chave_ou_conversa(self):
+        for protocolo, entrada, saida, custo in (("openai", 30, 10, .001), ("anthropic", 20, 8, None)):
+            with self.subTest(protocolo=protocolo), unittest.mock.patch.dict(os.environ, {"KIT_IA_CHAVE": "segredo-nao-gravar"}):
+                codigo, _, erro = rodar("executar", "revisar", "--entrada", "conteudo-nao-gravar",
+                    "--url", self.url, "--modelo", "falso", "--protocolo", protocolo, "--task", "BL-LU-3")
+                self.assertEqual(codigo, 0, erro)
+                texto = (Path(self.temporaria.name) / "uso.jsonl").read_text(encoding="utf-8")
+                registro = json.loads(texto.splitlines()[-1])
+                self.assertEqual((registro["entrada"], registro["saida"], registro["custo_usd"]), (entrada, saida, custo))
+                self.assertEqual(registro["task"], "BL-LU-3")
+                self.assertGreaterEqual(registro["duracao_segundos"], 0)
+                self.assertNotIn("segredo-nao-gravar", texto)
+                self.assertNotIn("conteudo-nao-gravar", texto)
+                self.assertNotIn("resposta openai", texto)
+
+    def test_falha_de_registro_so_avisa(self):
+        with unittest.mock.patch("kit.custo.registrar_uso", side_effect=OSError("disco indisponível")):
+            codigo, saida, erro = rodar("executar", "revisar", "--entrada", "x", "--url", self.url, "--protocolo", "openai")
+        self.assertEqual(codigo, 0)
+        self.assertIn("resposta openai", saida)
+        self.assertIn("aviso:", erro)
+
+    def test_custo_cli_sem_fontes_e_erro_de_data(self):
+        with unittest.mock.patch("kit.custo.coletar", return_value=([], [])):
+            codigo, saida, _ = rodar("custo", "--json")
+            self.assertEqual(codigo, 0)
+            self.assertEqual(json.loads(saida)["grupos"], [])
+            self.assertEqual(rodar("custo", "--desde", "invalida")[0], 1)
+
     def test_provedor_fora_do_ar_vira_mensagem(self):
         codigo, _, erro = rodar("executar", "revisar", "--entrada", "x",
                                 "--url", "http://127.0.0.1:1/v1", "--protocolo", "openai")
         self.assertEqual(codigo, 1)
         self.assertIn("não consegui conectar", erro)
+        registro = json.loads((Path(self.temporaria.name) / "uso.jsonl").read_text(encoding="utf-8"))
+        self.assertIsNone(registro["entrada"])
+        self.assertGreaterEqual(registro["duracao_segundos"], 0)
 
     def test_skill_inexistente_e_erro(self):
         codigo, _, erro = rodar("executar", "nao-existe", "--entrada", "x")

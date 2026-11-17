@@ -18,7 +18,7 @@ dev-amys-ai (este repositório)                 seu projeto
                      python kit.py executar ───> qualquer modelo por API
 ```
 
-Versão atual: **0.1.2** ([CHANGELOG.md](CHANGELOG.md)).
+Versão atual: **0.2.0** ([CHANGELOG.md](CHANGELOG.md)).
 
 ## As peças
 
@@ -84,11 +84,52 @@ configurado em `hospedagem` no `projeto.yaml`. Modelos de CI em [modelos/ci/](mo
 cp .env.exemplo .env                        # escolha o provedor (padrão: Ollama local, sem chave)
 git diff | python kit.py executar revisar   # revisão de código com o modelo configurado
 python kit.py executar planejar --entrada "adicionar login com Google"
+git diff | python kit.py executar revisar --task BL-LU-3
 ```
 
 Dois protocolos cobrem praticamente todo provedor: `openai` (Ollama, OpenRouter, OpenAI, Gemini,
 LM Studio, vLLM) e `anthropic` (API nativa do Claude). Exemplos no [.env.exemplo](.env.exemplo).
 Nesse modo o modelo não tem ferramentas: serve para automações de texto como revisão de diff no CI.
+
+## Medir tokens, tempo e custo
+
+```bash
+python kit.py custo --desde 2026-11-16 --por agente
+python kit.py custo --por modelo --json
+python kit.py custo --lote BL-LU-1,BL-LU-2
+python kit.py custo --verificar-orcamento ../meu-projeto
+```
+
+O comando lê métricas locais de Claude Code (incluindo subagentes), Codex, Antigravity e
+`kit.py executar`, sem chamar modelos nem salvar conversas. Agrupe com `--por task`, `modelo`,
+`agente` ou `papel`. A task é detectada pela branch ou pasta; `executar --task ID` tem prioridade.
+O filtro `--desde` inclui o total da sessão que teve atividade desde essa data, sem estimar
+uma fração de tokens. Minutos são o intervalo entre a primeira e a última atividade de cada
+sessão; a soma pode incluir sessões simultâneas. O tempo de `executar` é a duração da chamada.
+Se há vários modelos numa sessão Claude, cada intervalo é atribuído ao último modelo ativo,
+e o tempo anterior à primeira resposta fica com o primeiro modelo.
+
+Configure tarifas em [config/precos.json](config/precos.json), por nome exato de modelo,
+com `entrada`, `saida`, `cache_leitura` e `cache_escrita` em USD por milhão de tokens.
+Sem tarifa, o custo aparece como `—` (`null` no JSON); `usage.cost` do provedor tem prioridade.
+O cache já faz parte da entrada normalizada: não some as colunas de cache ao total de tokens.
+Tokens desconhecidos aparecem como `—`; `*` indica medição parcial.
+
+`executar` registra somente data, protocolo, URL sem credenciais/query, modelo, uso, duração,
+pasta e task em `~/.kit-ia/uso.jsonl`. Falha na gravação apenas emite aviso. Os caminhos são
+substituíveis por `KIT_IA_HOME`, `KIT_IA_CLAUDE_DIR` (padrão `~/.claude/projects`),
+`KIT_IA_CODEX_DIR` (`~/.codex/sessions`) e `KIT_IA_ANTIGRAVITY_DIR` (`~/.gemini/antigravity`).
+
+O orçamento lê `.kit-ia/projeto.yaml` do projeto indicado, filtra sessões dentro dessa pasta
+e compara cada task com `orcamento.por_task.tokens` e `minutos`. Retorna 1 ao exceder e 0
+quando não há excesso medido; uso parcial é avisado e não comprova cumprimento do orçamento.
+O leitor aceita mapas indentados/inline, listas simples, strings, números e comentários;
+sintaxe fora desse subconjunto produz erro com a linha. Não interrompe agentes em execução.
+
+Limitações: Antigravity não expõe tokens em campos verificados, e seu tempo cobre apenas
+o último envio até a última alteração. Bancos com acesso restrito podem exigir leitura
+imutável (com aviso de possível ausência do WAL). O acumulado do Codex é atribuído ao último
+modelo quando há troca na sessão; o aviso explicita isso. OpenCode/Kilo ainda não têm leitor.
 
 ## Personalizar
 
@@ -101,7 +142,8 @@ Nesse modo o modelo não tem ferramentas: serve para automações de texto como 
 ## Estrutura
 
 ```text
-kit.py                  CLI: listar, validar, instalar, nova-skill, executar
+kit.py                  CLI: listar, validar, instalar, nova-skill, executar, custo
+custo.py                leitura e agregação das métricas locais de uso
 skills/                 skills (padrão Agent Skills)
 processo/               como trabalhar; vai para .kit-ia/processo/ nos projetos
 padroes/                padrões técnicos por área; vai para .kit-ia/padroes/

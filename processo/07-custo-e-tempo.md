@@ -32,21 +32,65 @@ Aumentar o orçamento é decisão do usuário.
 
 ## Medição
 
-(ainda não implementado) `kit.py custo` lê os registros das sessões (Claude Code, Codex e outros) e o registro
-de eventos das tasks, sem gastar token de modelo, e mostra tokens por task, papel e modelo
-(entrada, saída e cache) e o tempo de cada etapa.
+`kit.py custo` lê métricas locais de Claude Code (incluindo subagentes), Codex,
+Antigravity e chamadas de `kit.py executar`, sem gastar token de modelo nem guardar conversas.
 
-Enquanto a medição automática não estiver disponível, relate o que estiver disponível (uso informado pelo agente ao fim de cada
-subagente, duração aproximada) e diga que a medição é parcial.
+```bash
+python kit.py custo --desde 2026-11-16 --por task
+python kit.py custo --por modelo --json
+python kit.py custo --verificar-orcamento <pasta-do-projeto>
+```
+
+Use `--por task`, `modelo`, `agente` ou `papel`. A task vem da branch ou da pasta
+(`BL-<sigla>-<número>`); chamadas diretas aceitam `executar --task ID`. Sem ID, fica
+`(sem task)`. O filtro de data inclui a sessão inteira se houve atividade no período.
+Entrada inclui cache; as colunas de cache são detalhamento, não tokens adicionais.
+O Claude é deduplicado por requestId (ou message.id); o Codex usa o último total acumulado,
+sem somar cache ou raciocínio novamente. Se houve troca de modelo no Codex, o acumulado
+é atribuído ao último modelo, com aviso.
+
+Minutos são da primeira à última atividade da sessão (incluindo pausas); somas podem conter
+sessões simultâneas. Nas chamadas do kit, mede-se a duração da requisição.
+Em sessões Claude com vários modelos, os intervalos vão para o último
+modelo ativo, com o trecho anterior à primeira resposta atribuído ao primeiro modelo.
+Antigravity tem tokens desconhecidos e tempo parcial entre último envio e última alteração: os bancos
+de conversas têm blobs sem formato de uso verificado. Leitura imutável, quando necessária,
+avisa sobre dados possivelmente ainda no WAL. OpenCode/Kilo não têm leitor verificado.
+
+Preencha `config/precos.json` na instalação do kit com tarifas por modelo em USD por milhão:
+`entrada`, `saida`, `cache_leitura`, `cache_escrita`. Custo informado pelo provedor tem
+prioridade. Sem preço ou uso conhecido, mostre `—` (`null` no JSON), nunca invente valores.
+`*` na coluna Tokens indica medição parcial; dados desconhecidos não comprovam orçamento.
+
+O registro do kit fica em `~/.kit-ia/uso.jsonl`. Os diretórios podem ser trocados por
+`KIT_IA_HOME`, `KIT_IA_CLAUDE_DIR`, `KIT_IA_CODEX_DIR` e `KIT_IA_ANTIGRAVITY_DIR`.
+Falha ao gravar uso avisa sem impedir a execução da skill.
+
+`--verificar-orcamento` lê `.kit-ia/projeto.yaml` da pasta indicada (ou um arquivo YAML),
+filtra registros de dentro do projeto e compara tokens e minutos de cada task com
+`orcamento.por_task`. Sai com 1 listando os excessos, ou 0 sem excesso medido. Não interrompe
+agentes nem consulta o registro de estados das tasks (ainda não implementado).
+O leitor suporta mapas por indentação, mapas inline, listas simples, strings, números e
+comentários; sintaxe não suportada gera erro com a linha.
 
 ## Relatório do lote
 
-```text
-Lote: landing-v1, 4 tasks (BL-LU-12 a 15)        Duração: 1h40
-| Task      | Estado    | Tokens  | Tempo | Redespachos |
-| BL-LU-12  | integrada | 310 mil | 25 min | 0 |
-| BL-LU-13  | devolvida | 520 mil | 41 min | 1 | <- estourou o orçamento por task
-Maior gasto: leitura de capturas no coordenador (passar para o leitor).
+```bash
+python kit.py custo --lote BL-LU-12,BL-LU-13
 ```
+
+Formato de saída (valores apenas ilustrativos):
+
+```text
+Lote: BL-LU-12, BL-LU-13
+| Task | Tokens | Tempo (min) | Custo (USD) |
+| --- | ---: | ---: | ---: |
+| BL-LU-13 | 520000 | 41.00 | — |
+| BL-LU-12 | 310000 | 25.00 | — |
+Maior fonte de gasto: claude (tokens; preços incompletos).
+```
+
+O maior gasto usa USD quando todos os custos são conhecidos; caso contrário, usa tokens
+medidos. Acrescente manualmente estado e redespachos, quando disponíveis.
 
 Termine com uma melhoria concreta para o próximo lote, quando houver.
