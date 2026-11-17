@@ -3,6 +3,7 @@ import argparse
 import contextlib
 import io
 import json
+import multiprocessing
 import os
 import sys
 import tempfile
@@ -22,6 +23,23 @@ def rodar(*argv: str) -> tuple[int, str, str]:
     with contextlib.redirect_stdout(saida), contextlib.redirect_stderr(erro):
         codigo = kit.main(list(argv))
     return codigo, saida.getvalue(), erro.getvalue()
+
+
+def registrar_em_processo(base, perfil, iniciado, lido, continuar):
+    """Coordena processos reais para manter a primeira transação aberta durante a segunda."""
+    os.environ["KIT_IA_HOME"] = perfil
+    carregar = kit.carregar_projetos
+
+    def carregar_e_sinalizar():
+        projetos = carregar()
+        lido.set()
+        if continuar is not None and not continuar.wait(10):
+            raise RuntimeError("a transação não foi liberada pelo teste")
+        return projetos
+
+    iniciado.set()
+    with unittest.mock.patch.object(kit, "carregar_projetos", side_effect=carregar_e_sinalizar):
+        kit.registrar_projeto(Path(base), ["universal"], None, True)
 
 
 class CustoTest(unittest.TestCase):
@@ -671,6 +689,58 @@ class AtualizarProjetosTest(unittest.TestCase):
         self.assertEqual(codigo, 0, erro)
         self.assertEqual(self.registros()[str(self.projeto.resolve())]["agentes"], ["universal"])
 
+    def test_registros_concorrentes_preservam_ambos_projetos(self):
+        contexto = multiprocessing.get_context("spawn")
+        continuar = contexto.Event()
+        iniciados = [contexto.Event(), contexto.Event()]
+        lidos = [contexto.Event(), contexto.Event()]
+        caminhos = [self.projeto, self.raiz / "outro"]
+        processos = [contexto.Process(target=registrar_em_processo, args=(
+            str(caminho), str(self.registro.parent), iniciados[indice], lidos[indice],
+            continuar if indice == 0 else None)) for indice, caminho in enumerate(caminhos)]
+        try:
+            processos[0].start()
+            self.assertTrue(lidos[0].wait(10), "o primeiro processo não leu o registro")
+            processos[1].start()
+            self.assertTrue(iniciados[1].wait(10), "o segundo processo não iniciou")
+            # A segunda leitura precisa aguardar a primeira gravação, não só o replace.
+            segunda_leitura_bloqueada = not lidos[1].wait(0.3)
+            continuar.set()
+            for processo in processos:
+                processo.join(10)
+                self.assertEqual(processo.exitcode, 0)
+            self.assertTrue(segunda_leitura_bloqueada, "houve leitura de registro ainda não gravado")
+            self.assertEqual(set(self.registros()), {str(caminho) for caminho in caminhos})
+        finally:
+            continuar.set()
+            for processo in processos:
+                if processo.is_alive():
+                    processo.terminate()
+                    processo.join(5)
+
+    def test_remocao_preserva_registro_incluido_depois_da_leitura_do_lote(self):
+        self.instalar()
+        kit.shutil.rmtree(self.projeto)
+        outro = self.raiz / "outro"
+        outro.mkdir()
+        carregar = kit.carregar_projetos
+        primeira_leitura = True
+
+        def carregar_com_instalacao_concorrente():
+            nonlocal primeira_leitura
+            projetos = carregar()
+            if primeira_leitura:
+                primeira_leitura = False
+                kit.registrar_projeto(outro, ["universal"], ["verificar"], True)
+            return projetos
+
+        with unittest.mock.patch.object(kit, "carregar_projetos", side_effect=carregar_com_instalacao_concorrente):
+            codigo, saida, erro = rodar("atualizar")
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("removida do registro", saida)
+        self.assertEqual(set(self.registros()), {str(outro)})
+        self.assertEqual(self.registros()[str(outro)]["skills"], ["verificar"])
+
     def test_simulacao_e_instalacao_global_nao_registram(self):
         self.instalar(None, "--simular")
         self.assertFalse(self.registro.exists())
@@ -714,6 +784,34 @@ class AtualizarProjetosTest(unittest.TestCase):
             self.assertIn(trecho, saida)
         _, curta, _ = rodar("status")
         self.assertEqual(len(curta.splitlines()), 1)
+
+    def test_status_detecta_copias_gerenciadas_de_selecoes_anteriores(self):
+        for selecao in ("skills", "agentes"):
+            with self.subTest(selecao=selecao):
+                projeto = self.projeto / selecao
+                projeto.mkdir()
+                self.instalar(projeto)
+                opcoes = (["--agentes", "claude,universal", "--skills", "verificar"]
+                          if selecao == "skills" else ["--agentes", "universal"])
+                codigo, _, erro = rodar("instalar", str(projeto), *opcoes)
+                self.assertEqual(codigo, 0, erro)
+                codigo, saida, erro = rodar("status", str(projeto), "--detalhes")
+                self.assertEqual(codigo, 0, erro)
+                self.assertIn("em dia", saida)
+                copia = projeto / ".claude/skills/planejar/SKILL.md"
+                copia.write_text("editada depois de reduzir a seleção", encoding="utf-8")
+                # Uma skill própria fora da seleção continua pertencendo ao usuário.
+                propria = projeto / ".claude/skills/minha-skill"
+                propria.mkdir()
+                (propria / "SKILL.md").write_text("própria", encoding="utf-8")
+                antes = self.snapshot()
+                codigo, saida, erro = rodar("status", str(projeto), "--detalhes")
+                self.assertEqual(codigo, 0, erro)
+                self.assertIn("1 pendência(s)", saida)
+                self.assertEqual(saida.count("cópia desatualizada: .claude/skills/planejar"), 1)
+                self.assertNotIn("em dia", saida)
+                self.assertNotIn("minha-skill", saida)
+                self.assertEqual(self.snapshot(), antes)
 
     def test_status_yaml_invalido_vira_pendencia_sem_traceback(self):
         self.instalar()

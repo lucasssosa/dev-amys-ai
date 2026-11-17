@@ -2,6 +2,9 @@
 
 ## [0.2.0] - 2026-11-17
 
+- Instalações concorrentes preservam todas as entradas do registro; a remoção de pastas
+  inexistentes também preserva registros incluídos durante a atualização.
+- `status` confere cópias com marcador de seleções anteriores de skills e agentes.
 - Instalações locais registram projetos, agentes, versão e data em `KIT_IA_HOME/projetos.json`.
   Novos comandos `status [projeto] [--detalhes]` e `atualizar [projeto] [--simular]`
   identificam cópias e configurações pendentes e atualizam os projetos registrados,

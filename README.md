@@ -87,6 +87,7 @@ entrada. Instalações com `--global` ou `--simular` não registram projetos.
 `status` resume cada projeto em uma linha; `--detalhes` lista cópias desatualizadas,
 chaves ausentes e pendências de `AGENTS.md` e `CLAUDE.md`. Um caminho explícito também
 pode ser inspecionado antes de ser registrado.
+As cópias com marcador de seleções anteriores de skills ou agentes também são conferidas.
 
 `atualizar` reinstala somente nos projetos registrados, com os agentes e as opções
 `--skills` e `--sem-mcp` da instalação mais recente. Preserva os arquivos do usuário

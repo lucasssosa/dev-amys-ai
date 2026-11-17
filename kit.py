@@ -33,10 +33,16 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 import custo
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 VERSAO = "0.2.0"
 
@@ -519,6 +525,29 @@ def arquivo_projetos() -> Path:
     return custo.pasta_env("KIT_IA_HOME", Path.home() / ".kit-ia") / "projetos.json"
 
 
+@contextmanager
+def bloquear_projetos():
+    caminho = arquivo_projetos().with_suffix(".lock")
+    try:
+        caminho.parent.mkdir(parents=True, exist_ok=True)
+        # O arquivo permanece: apagá-lo permitiria bloquear arquivos diferentes para o
+        # mesmo registro. O SO libera o bloqueio mesmo se o processo for interrompido.
+        with caminho.open("a+b") as trava:
+            if os.name == "nt":
+                msvcrt.locking(trava.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                fcntl.flock(trava.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    msvcrt.locking(trava.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(trava.fileno(), fcntl.LOCK_UN)
+    except OSError as erro:
+        raise ErroKit(f"não consegui acessar o bloqueio do registro {caminho}: {erro}") from erro
+
+
 def carregar_projetos() -> dict:
     caminho = arquivo_projetos()
     try:
@@ -554,11 +583,13 @@ def salvar_projetos(projetos: dict):
 
 
 def registrar_projeto(base: Path, agentes: list[str], skills: list[str] | None, sem_mcp: bool):
-    projetos = carregar_projetos()
-    projetos[str(base)] = {"agentes": agentes, "versao": VERSAO,
-                           "data": datetime.now(timezone.utc).isoformat(),
-                           "skills": skills, "sem_mcp": sem_mcp}
-    salvar_projetos(projetos)
+    # Bloquear só a escrita ainda perderia entradas lidas por instalações concorrentes.
+    with bloquear_projetos():
+        projetos = carregar_projetos()
+        projetos[str(base)] = {"agentes": agentes, "versao": VERSAO,
+                               "data": datetime.now(timezone.utc).isoformat(),
+                               "skills": skills, "sem_mcp": sem_mcp}
+        salvar_projetos(projetos)
 
 
 def pendencias_projeto(base: Path, registro: dict | None) -> tuple[str, list[str]]:
@@ -571,17 +602,25 @@ def pendencias_projeto(base: Path, registro: dict | None) -> tuple[str, list[str
 
     agentes = selecionar_agentes(registro["agentes"] if registro else None)
     skills = selecionar_skills(registro.get("skills") if registro else None)
-    copias = [(RAIZ / nome, pasta_kit / nome) for nome in PASTAS_COPIADAS]
+    copias = {pasta_kit / nome: RAIZ / nome for nome in PASTAS_COPIADAS}
     destinos = {base / cfg["skills"] for cfg in agentes.values() if cfg.get("skills")}
-    copias.extend((skill, destino / skill.name) for destino in sorted(destinos) for skill in skills)
-    for fonte, copia in copias:
+    copias.update((destino / skill.name, skill) for destino in destinos for skill in skills)
+    # Uma seleção menor não apaga cópias anteriores; o marcador continua atribuindo-as
+    # ao kit, inclusive nos destinos dos agentes que deixaram de ser selecionados.
+    todos_destinos = {base / cfg["skills"] for cfg in carregar_agentes().values() if cfg.get("skills")}
+    for destino in sorted(todos_destinos):
+        if destino.is_dir():
+            for copia in destino.iterdir():
+                if copia.is_dir() and (copia / MARCADOR).is_file():
+                    copias.setdefault(copia, PASTA_SKILLS / copia.name)
+    for copia, fonte in sorted(copias.items()):
         relativo = copia.relative_to(base).as_posix()
         if not copia.exists():
             # Sem registro, só é possível atribuir ao kit pastas com o marcador.
             if registro or copia.parent == pasta_kit:
                 pendencias.append(f"cópia ausente: {relativo}")
         elif (copia / MARCADOR).is_file():
-            if not pastas_iguais(fonte, copia):
+            if not fonte.is_dir() or not pastas_iguais(fonte, copia):
                 pendencias.append(f"cópia desatualizada: {relativo}")
         elif registro or copia.parent == pasta_kit:
             pendencias.append(f"pasta do usuário, mantida: {relativo}")
@@ -642,10 +681,17 @@ def cmd_atualizar(args) -> int:
     for caminho in caminhos:
         if not Path(caminho).is_dir():
             acao = "seria removida do registro" if args.simular else "removida do registro"
-            resumos.append(f"{caminho}: aviso: pasta inexistente; {acao}")
+            aviso = f"pasta inexistente; {acao}"
             if not args.simular:
-                del projetos[caminho]
-                salvar_projetos(projetos)
+                with bloquear_projetos():
+                    atuais = carregar_projetos()
+                    # A lista do lote pode anteceder instalações feitas por outro processo.
+                    if not Path(caminho).is_dir():
+                        atuais.pop(caminho, None)
+                        salvar_projetos(atuais)
+                    else:
+                        aviso = "pasta reapareceu; mantida no registro"
+            resumos.append(f"{caminho}: aviso: {aviso}")
             continue
         registro = projetos[caminho]
         opcoes = argparse.Namespace(destino=caminho, global_=False, agentes=",".join(registro["agentes"]),
@@ -655,9 +701,6 @@ def cmd_atualizar(args) -> int:
         try:
             ex = instalar(opcoes)
             resumos.append(f"{caminho}: {ex.mudancas} mudança(s), {ex.avisos} aviso(s)")
-            if not args.simular:
-                # A próxima remoção deve preservar as entradas já atualizadas neste lote.
-                projetos = carregar_projetos()
         except (ErroKit, OSError, UnicodeError) as erro:
             resumos.append(f"{caminho}: erro: {erro}")
             falhas = True
