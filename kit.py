@@ -12,12 +12,12 @@ Só usa a biblioteca padrão do Python de propósito: o kit precisa rodar em qua
 máquina e em qualquer CI, sem `pip install`.
 
 Uso rápido:
-    python kit.py listar
-    python kit.py validar
-    python kit.py instalar ../meu-projeto --simular
-    python kit.py instalar --global
-    python kit.py nova-skill gerar-changelog --descricao "Gera ... Use quando ..."
-    git diff | python kit.py executar revisar
+    python kit.py list
+    python kit.py validate
+    python kit.py install ../meu-projeto --dry-run
+    python kit.py install --global
+    python kit.py new-skill gerar-changelog --description "Gera ... Use quando ..."
+    git diff | python kit.py run revisar
 """
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ if os.name == "nt":
 else:
     import fcntl
 
-VERSAO = "0.2.0"
+VERSAO = "0.3.0"
 
 RAIZ = Path(__file__).resolve().parent
 PASTA_SKILLS = RAIZ / "skills"
@@ -59,7 +59,7 @@ PASTA_NO_PROJETO = ".kit-ia"
 PASTAS_COPIADAS = ("processo", "padroes", "modelos")
 REFERENCIA_NUCLEO = f"{PASTA_NO_PROJETO}/processo/00-nucleo.md"
 
-# Arquivos Markdown cujos links relativos o `validar` confere.
+# Arquivos Markdown cujos links relativos o `validate` confere.
 ARQUIVOS_COM_LINKS = ("README.md", "AGENTS.md", "CHANGELOG.md", "processo/*.md", "padroes/*.md",
                       "modelos/**/*.md", "docs/*.md", "skills/*/*.md")
 
@@ -165,7 +165,7 @@ def descricao_da_skill(pasta: Path) -> str:
         dados, _ = ler_frontmatter((pasta / "SKILL.md").read_text(encoding="utf-8"))
         return dados.get("description", "")
     except (OSError, ErroKit):
-        return "(inválida: rode `python kit.py validar`)"
+        return "(inválida: rode `python kit.py validate`)"
 
 
 def selecionar_skills(nomes: list[str] | None) -> list[Path]:
@@ -307,10 +307,10 @@ def localizar_executavel(nome: str, alternativas: list[str]) -> str | None:
     return None
 
 
-# =============================================================== execução (com --simular)
+# =============================================================== execução (com --dry-run)
 
 class Execucao:
-    """Faz (ou só mostra, com --simular) cada mudança no disco, e conta o que mudou."""
+    """Faz (ou só mostra, com --dry-run) cada mudança no disco, e conta o que mudou."""
 
     def __init__(self, simular: bool):
         self.simular = simular
@@ -337,13 +337,13 @@ class Execucao:
     def copiar_pasta(self, origem: Path, destino: Path, forcar: bool):
         """Copia uma pasta gerenciada pelo kit (skill, processo, padrões, modelos).
 
-        Pasta sem o MARCADOR é do usuário: só é trocada com --forcar.
+        Pasta sem o MARCADOR é do usuário: só é trocada com --force.
         Pasta com o MARCADOR é cópia do kit: é atualizada sempre (edições à mão se perdem,
         e é de propósito: regra própria do projeto vai no AGENTS.md ou no projeto.yaml).
         """
         if destino.exists():
             if not (destino / MARCADOR).exists() and not forcar:
-                self.aviso(f"{destino} já existe e não foi instalada pelo kit: mantida (use --forcar para trocar)")
+                self.aviso(f"{destino} já existe e não foi instalada pelo kit: mantida (use --force para trocar)")
                 return
             if pastas_iguais(origem, destino):
                 self._relatar("=", f"{destino} (sem mudanças)")
@@ -381,7 +381,7 @@ def instalar_mcp_json(ex: Execucao, caminho: Path, formato: str, servidores: dic
     for nome, servidor in servidores.items():
         if nome in container and not forcar:
             if container[nome] != converter_servidor(formato, servidor):
-                ex.aviso(f"{caminho}: já tem o servidor '{nome}' com outra configuração; mantido (use --forcar)")
+                ex.aviso(f"{caminho}: já tem o servidor '{nome}' com outra configuração; mantido (use --force)")
             continue
         container[nome] = converter_servidor(formato, servidor)
     if formato == "gemini":
@@ -390,16 +390,22 @@ def instalar_mcp_json(ex: Execucao, caminho: Path, formato: str, servidores: dic
     ex.escrever(caminho, json.dumps(dados, indent=2, ensure_ascii=False) + "\n")
 
 
-def instalar_mcp_global(ex: Execucao, configuracoes: list[dict], servidores: dict, executar: bool):
+def instalar_mcp_global(ex: Execucao, configuracoes: list[dict], servidores: dict, executar: bool,
+                       remover: bool = False):
     print("\nMCP global (rode uma vez):")
     pendentes = []
     for mcp in configuracoes:
         formato = mcp["formato"]
-        if formato == "comando-codex":
+        if formato == "comando-codex" and not remover:
             for nome, servidor in servidores.items():
                 if servidor.get("cabecalhos"):
                     ex.aviso(f"Codex: servidor '{nome}' tem cabeçalhos; configure à mão")
-        for comando in comandos_mcp_global(formato, servidores):
+        comandos = comandos_mcp_global(formato, servidores)
+        if remover:
+            # A configuração central continua sendo a fonte dos executáveis e servidores.
+            executavel = {"comando-codex": "codex", "comando-antigravity": "agy"}[formato]
+            comandos = [[executavel, "mcp", "remove", nome] for nome in servidores]
+        for comando in comandos:
             print(f"  {comando_legivel(comando)}")
             pendentes.append((comando, mcp.get("executaveis_alternativos", [])))
 
@@ -440,7 +446,7 @@ def instalar(args) -> Execucao:
         destinos = {Path(cfg["skills_global"]).expanduser() for cfg in agentes.values() if cfg.get("skills_global")}
     else:
         if not args.destino:
-            raise ErroKit("informe a pasta do projeto (ex.: python kit.py instalar ../meu-projeto) ou use --global")
+            raise ErroKit("informe a pasta do projeto (ex.: python kit.py install ../meu-projeto) ou use --global")
         base = Path(args.destino).expanduser().resolve()
         if not base.is_dir():
             raise ErroKit(f"a pasta {base} não existe")
@@ -517,6 +523,204 @@ def instalar(args) -> Execucao:
 def cmd_instalar(args) -> int:
     instalar(args)
     return 0
+
+
+# =============================================================== desinstalação
+
+def caminho_sem_desvios(caminho: Path, limite: Path) -> bool:
+    """Não siga links ou junções: um marcador fora do destino não autoriza remoção."""
+    if caminho == limite or not caminho.is_relative_to(limite):
+        return False
+    return all(not parte.is_symlink() and not getattr(os.path, "isjunction", lambda p: False)(parte)
+               for parte in (caminho, *caminho.parents))
+
+
+def planejar_remocao_mcp(ex: Execucao, caminho: Path, formato: str, servidores: dict,
+                         acoes: dict):
+    if not caminho.is_file():
+        return
+    try:
+        dados = ler_json(caminho)
+    except (ErroKit, OSError, UnicodeError) as erro:
+        ex.aviso(f"{caminho}: mantido; {erro}")
+        return
+    if not isinstance(dados, dict):
+        ex.aviso(f"{caminho}: mantido; o JSON precisa ser um objeto")
+        return
+    original = json.dumps(dados, ensure_ascii=False)
+    chave = CHAVE_DOS_SERVIDORES[formato]
+    container = dados.get(chave)
+    if isinstance(container, dict):
+        removido = False
+        for nome, servidor in servidores.items():
+            if nome not in container:
+                continue
+            if container[nome] == converter_servidor(formato, servidor):
+                del container[nome]
+                removido = True
+            else:
+                ex.aviso(f"{caminho}: servidor '{nome}' alterado, mantido")
+        if removido and not container:
+            dados.pop(chave)
+    contexto = dados.get("context")
+    if formato == "gemini" and isinstance(contexto, dict):
+        if contexto.get("fileName") == ["AGENTS.md", "GEMINI.md"]:
+            del contexto["fileName"]
+            if not contexto:
+                del dados["context"]
+    if json.dumps(dados, ensure_ascii=False) != original:
+        acoes[caminho] = (json.dumps(dados, indent=2, ensure_ascii=False) + "\n"
+                           if dados.keys() - {"$schema"} else None)
+
+
+def desinstalar(args) -> int:
+    agentes = selecionar_agentes(lista_csv(args.agentes))
+    ex = Execucao(args.simular)
+    acoes: dict[Path, str | None] = {}
+    if args.global_:
+        if args.destino:
+            raise ErroKit("use a pasta do projeto ou --global, não ambos")
+        destinos = {Path(cfg["skills_global"]).expanduser().absolute()
+                    for cfg in agentes.values() if cfg.get("skills_global")}
+        base = None
+        projetos = {}
+    else:
+        if not args.destino:
+            raise ErroKit("informe a pasta do projeto ou use --global")
+        base = Path(args.destino).expanduser().resolve()
+        if not base.is_dir():
+            raise ErroKit(f"a pasta {base} não existe")
+        projetos = carregar_projetos()
+        destinos = {base / cfg["skills"] for cfg in agentes.values() if cfg.get("skills")}
+
+    def seguro(caminho, limite):
+        if caminho_sem_desvios(caminho, limite):
+            return True
+        ex.aviso(f"{caminho}: caminho com link, junção ou fora do destino; mantido")
+        return False
+
+    for destino in sorted(destinos):
+        limite = base if base else destino.parent
+        if not seguro(destino, limite) or not destino.is_dir():
+            continue
+        for pasta in sorted(destino.iterdir()):
+            if (seguro(pasta, limite) and pasta.is_dir()
+                    and (pasta / MARCADOR).is_file() and not (pasta / MARCADOR).is_symlink()):
+                acoes[pasta] = None
+
+    if base:
+        pasta_kit = base / PASTA_NO_PROJETO
+        for nome in PASTAS_COPIADAS:
+            pasta = pasta_kit / nome
+            if (seguro(pasta, base) and pasta.is_dir()
+                    and (pasta / MARCADOR).is_file() and not (pasta / MARCADOR).is_symlink()):
+                acoes[pasta] = None
+        versao_instalada = projetos.get(str(base), {}).get("versao", VERSAO)
+        modelos = {
+            pasta_kit / "VERSAO": f"{versao_instalada}\n",
+            pasta_kit / "projeto.yaml": (PASTA_TEMPLATES / "projeto.yaml").read_text(encoding="utf-8").replace("{{nome}}", base.name),
+            base / "AGENTS.md": MODELO_AGENTS_MD.read_text(encoding="utf-8"),
+        }
+        if "claude" in agentes:
+            modelos[base / "CLAUDE.md"] = (PASTA_TEMPLATES / "CLAUDE.md").read_text(encoding="utf-8")
+        for caminho, modelo in modelos.items():
+            if not seguro(caminho, base) or not caminho.is_file():
+                continue
+            if caminho.read_bytes() == modelo.encode("utf-8"):
+                acoes[caminho] = None
+            else:
+                secao = {"AGENTS.md": "a seção 'Como trabalhar' que aponta .kit-ia/",
+                         "CLAUDE.md": "a linha '@AGENTS.md' e a referência a .kit-ia/"}.get(caminho.name)
+                ex.aviso(f"{caminho}: editado, mantido" + (f"; pode remover à mão {secao}" if secao else ""))
+        servidores = carregar_servidores()
+        globais = []
+        for cfg in agentes.values():
+            mcp = cfg.get("mcp")
+            if not mcp:
+                continue
+            if mcp["formato"].startswith("comando-"):
+                globais.append(mcp)
+            else:
+                caminho = base / mcp["arquivo"]
+                if seguro(caminho, base):
+                    planejar_remocao_mcp(ex, caminho, mcp["formato"], servidores, acoes)
+    else:
+        globais = []
+        servidores = {}
+
+    print("\nDesinstalação (simulação):" if args.simular else "\nDesinstalação:")
+    for caminho, conteudo in acoes.items():
+        print(f"  {'remover' if conteudo is None else 'remover entradas do kit em'} {caminho}")
+    registrado = base is not None and str(base) in projetos
+    if registrado:
+        print(f"  remover {base} do registro de projetos")
+    # A prévia inclui também os pais que ficarão vazios. Diretórios do usuário com
+    # qualquer outro conteúdo sobrevivem; a remoção real sempre confere novamente.
+    pais = set()
+    for caminho, conteudo in acoes.items():
+        if conteudo is not None:
+            continue
+        limite = base if base else next(d.parent for d in destinos if caminho.is_relative_to(d))
+        for pai in caminho.parents:
+            if pai == limite:
+                break
+            pais.add(pai)
+    vazios = set()
+    for pai in sorted(pais, key=lambda p: len(p.parts), reverse=True):
+        if pai.is_dir() and all(filho in vazios or (filho in acoes and acoes[filho] is None)
+                               for filho in pai.iterdir()):
+            vazios.add(pai)
+            print(f"  remover pasta vazia {pai}")
+    if globais:
+        instalar_mcp_global(ex, globais, servidores, False, remover=True)
+    originais = {caminho: caminho.read_bytes() for caminho in acoes if caminho.is_file()}
+    if args.simular:
+        return 0
+    if not args.yes:
+        try:
+            resposta = input("Remover? [s/N] ")
+        except EOFError:
+            resposta = ""
+        if resposta.strip().lower() != "s":
+            print("Remoção cancelada.")
+            return 0
+    try:
+        for caminho, conteudo in acoes.items():
+            limite = base if base else next(d.parent for d in destinos if caminho.is_relative_to(d))
+            if not seguro(caminho, limite):
+                continue
+            if caminho in originais and (not caminho.is_file() or caminho.read_bytes() != originais[caminho]):
+                ex.aviso(f"{caminho}: mudou depois da prévia, mantido")
+                continue
+            if conteudo is not None:
+                ex.escrever(caminho, conteudo)
+            elif caminho.is_dir():
+                if not (caminho / MARCADOR).is_file() or (caminho / MARCADOR).is_symlink():
+                    ex.aviso(f"{caminho}: marcador ausente depois da prévia, mantido")
+                    continue
+                shutil.rmtree(caminho)
+            else:
+                caminho.unlink()
+        for pai in sorted(vazios, key=lambda p: len(p.parts), reverse=True):
+            if pai.is_dir() and not any(pai.iterdir()):
+                pai.rmdir()
+        if registrado:
+            with bloquear_projetos():
+                atuais = carregar_projetos()
+                atuais.pop(str(base), None)
+                salvar_projetos(atuais)
+    except OSError as erro:
+        raise ErroKit(f"não foi possível concluir a desinstalação: {erro}") from erro
+    if globais and args.mcp_global:
+        instalar_mcp_global(ex, globais, servidores, True, remover=True)
+    return 0
+
+
+def cmd_desinstalar(args) -> int:
+    try:
+        return desinstalar(args)
+    except (OSError, UnicodeError) as erro:
+        raise ErroKit(f"não foi possível concluir a desinstalação: {erro}") from erro
 
 
 # =============================================================== projetos / atualização
@@ -675,7 +879,7 @@ def cmd_atualizar(args) -> int:
     projetos = carregar_projetos()
     caminhos = [str(Path(args.projeto).expanduser().resolve())] if args.projeto else sorted(projetos)
     if args.projeto and caminhos[0] not in projetos:
-        raise ErroKit(f"projeto não registrado: {caminhos[0]}; use instalar primeiro")
+        raise ErroKit(f"projeto não registrado: {caminhos[0]}; use install primeiro")
     resumos = []
     falhas = False
     for caminho in caminhos:
@@ -787,7 +991,7 @@ def cmd_nova_skill(args) -> int:
     )
     pasta.mkdir(parents=True)
     (pasta / "SKILL.md").write_text(texto, encoding="utf-8", newline="\n")
-    print(f"Criada {pasta / 'SKILL.md'}. Preencha as seções e rode `python kit.py validar`.")
+    print(f"Criada {pasta / 'SKILL.md'}. Preencha as seções e rode `python kit.py validate`.")
     return 0
 
 
@@ -923,7 +1127,7 @@ def cmd_executar(args) -> int:
     else:
         entrada = ""
     if not entrada.strip():
-        raise ErroKit('sem entrada: passe --entrada "texto" ou um arquivo, ou envie por pipe (git diff | ...)')
+        raise ErroKit('sem entrada: passe --input "texto" ou um arquivo, ou envie por pipe (git diff | ...)')
 
     cfg = config_modelo(args)
     print(f"[kit] skill={args.skill} protocolo={cfg['protocolo']} modelo={cfg['modelo']} url={custo.url_publica(cfg['url'])}", file=sys.stderr)
@@ -944,7 +1148,12 @@ def ler_projeto(caminho: Path) -> dict:
 def cmd_custo(args) -> int:
     desde = custo.data(args.desde) if args.desde else None
     if args.desde and desde is None:
-        raise ErroKit("--desde deve ser uma data ISO, por exemplo 2026-11-16")
+        raise ErroKit("--since deve ser uma data ISO, por exemplo 2026-11-16")
+    ate = custo.data(args.ate) if args.ate else None
+    if args.ate and ate is None:
+        raise ErroKit("--until deve ser uma data ISO, por exemplo 2026-11-17")
+    if desde and ate and desde > ate:
+        raise ErroKit("--since não pode ser posterior a --until")
     try:
         precos = json.loads((RAIZ / "config/precos.json").read_text(encoding="utf-8"))["precos"]
         if not isinstance(precos, dict) or any(not isinstance(valor, dict) for valor in precos.values()):
@@ -957,11 +1166,17 @@ def cmd_custo(args) -> int:
         registros = [item for item in registros if (item["fim"] and item["fim"] >= desde)
                      or item.get("janela_incerta")
                      or (item["fim"] is None and item.get("medicao_incompleta"))]
+    if ate:
+        registros = [item for item in registros if (item["inicio"] and item["inicio"] <= ate)
+                     or item.get("janela_incerta")
+                     or (item["inicio"] is None and item.get("medicao_incompleta"))]
     lote = [item.strip() for item in args.lote.split(",") if item.strip()] if args.lote else []
     if lote:
         registros = [item for item in registros if item["task"] in lote
                      or (item.get("medicao_incompleta") and item["task"] == "(sem task)")]
-    por = "task" if lote or args.verificar_orcamento else args.por
+    por = "task" if lote or args.verificar_orcamento else {
+        "task": "task", "model": "modelo", "agent": "agente", "role": "papel", "day": "dia"
+    }[args.por]
     estouros = []
     incompletas = []
     if args.verificar_orcamento:
@@ -971,6 +1186,8 @@ def cmd_custo(args) -> int:
         limites = orcamento.get("por_task", {}) if isinstance(orcamento, dict) else {}
         if not isinstance(limites, dict) or any(custo.numero(limites.get(campo)) is None for campo in ("tokens", "minutos")):
             raise ErroKit("orcamento.por_task precisa de tokens e minutos numéricos não negativos")
+    if args.projeto or args.verificar_orcamento:
+        projeto = Path(args.projeto or args.verificar_orcamento).resolve()
         raiz_projeto = projeto if projeto.is_dir() else projeto.parent
         if raiz_projeto.name == PASTA_NO_PROJETO:
             raiz_projeto = raiz_projeto.parent
@@ -1038,52 +1255,63 @@ def cmd_custo(args) -> int:
 
 def montar_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="kit.py", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--versao", action="version", version=f"dev-amys-ai {VERSAO}")
+    parser.add_argument("--version", action="version", version=f"dev-amys-ai {VERSAO}")
     sub = parser.add_subparsers(dest="comando", required=True)
 
-    sub.add_parser("listar", help="lista skills, agentes e servidores MCP").set_defaults(func=cmd_listar)
-    sub.add_parser("validar", help="confere as skills contra o padrão Agent Skills").set_defaults(func=cmd_validar)
+    sub.add_parser("list", help="lista skills, agentes e servidores MCP").set_defaults(func=cmd_listar)
+    sub.add_parser("validate", help="confere as skills contra o padrão Agent Skills").set_defaults(func=cmd_validar)
 
-    p = sub.add_parser("instalar", help="instala skills, processo, padrões, AGENTS.md e MCP em um projeto (ou --global)")
+    p = sub.add_parser("install", help="instala skills, processo, padrões, AGENTS.md e MCP em um projeto (ou --global)")
     p.add_argument("destino", nargs="?", help="pasta do projeto")
     p.add_argument("--global", dest="global_", action="store_true", help="instala as skills para o usuário (todos os projetos)")
-    p.add_argument("--agentes", help="lista separada por vírgula (padrão: todos de config/agentes.json)")
+    p.add_argument("--agents", dest="agentes", help="lista separada por vírgula (padrão: todos de config/agentes.json)")
     p.add_argument("--skills", help="lista separada por vírgula (padrão: todas)")
-    p.add_argument("--sem-mcp", action="store_true", help="omite arquivos e comandos de MCP")
+    p.add_argument("--no-mcp", dest="sem_mcp", action="store_true", help="omite arquivos e comandos de MCP")
     p.add_argument("--mcp-global", action="store_true", help="oferece executar os comandos globais de MCP, após confirmação")
-    p.add_argument("--forcar", action="store_true", help="substitui skills e servidores que não são do kit")
-    p.add_argument("--simular", action="store_true", help="mostra o que faria, sem escrever nada")
+    p.add_argument("--force", dest="forcar", action="store_true", help="substitui skills e servidores que não são do kit")
+    p.add_argument("--dry-run", dest="simular", action="store_true", help="mostra o que faria, sem escrever nada")
     p.set_defaults(func=cmd_instalar)
+
+    p = sub.add_parser("uninstall", help="remove apenas arquivos e entradas gerenciados pelo kit")
+    p.add_argument("destino", nargs="?", help="pasta do projeto")
+    p.add_argument("--global", dest="global_", action="store_true", help="remove só skills globais com marcador")
+    p.add_argument("--agents", dest="agentes", help="lista separada por vírgula (padrão: todos)")
+    p.add_argument("--dry-run", dest="simular", action="store_true", help="mostra remoções sem alterar nem perguntar")
+    p.add_argument("--yes", action="store_true", help="confirma a remoção local; MCP global tem confirmação própria")
+    p.add_argument("--mcp-global", action="store_true", help="oferece remover MCP global após confirmação")
+    p.set_defaults(func=cmd_desinstalar)
 
     p = sub.add_parser("status", help="mostra versões e pendências dos projetos instalados")
     p.add_argument("projeto", nargs="?", help="pasta do projeto (padrão: todos os registrados)")
-    p.add_argument("--detalhes", action="store_true", help="lista cópias e chaves pendentes")
+    p.add_argument("--details", dest="detalhes", action="store_true", help="lista cópias e chaves pendentes")
     p.set_defaults(func=cmd_status)
 
-    p = sub.add_parser("atualizar", help="reinstala o kit nos projetos registrados, preservando arquivos do usuário")
+    p = sub.add_parser("update", help="reinstala o kit nos projetos registrados, preservando arquivos do usuário")
     p.add_argument("projeto", nargs="?", help="pasta registrada (padrão: todas)")
-    p.add_argument("--simular", action="store_true", help="mostra o que faria, sem escrever nada")
+    p.add_argument("--dry-run", dest="simular", action="store_true", help="mostra o que faria, sem escrever nada")
     p.set_defaults(func=cmd_atualizar)
 
-    p = sub.add_parser("nova-skill", help="cria uma skill nova a partir do modelo")
+    p = sub.add_parser("new-skill", help="cria uma skill nova a partir do modelo")
     p.add_argument("nome", help="nome em kebab-case (ex.: gerar-changelog)")
-    p.add_argument("--descricao", help="o que faz e quando usar")
+    p.add_argument("--description", dest="descricao", help="o que faz e quando usar")
     p.set_defaults(func=cmd_nova_skill)
 
-    p = sub.add_parser("executar", help="executa uma skill em qualquer modelo (sem ferramentas)")
+    p = sub.add_parser("run", help="executa uma skill em qualquer modelo (sem ferramentas)")
     p.add_argument("skill")
-    p.add_argument("--entrada", help="texto ou caminho de arquivo (ou use pipe)")
-    p.add_argument("--protocolo", choices=["openai", "anthropic"])
+    p.add_argument("--input", dest="entrada", help="texto ou caminho de arquivo (ou use pipe)")
+    p.add_argument("--protocol", dest="protocolo", choices=["openai", "anthropic"])
     p.add_argument("--url", help="base da API (ex.: http://localhost:11434/v1)")
-    p.add_argument("--modelo")
+    p.add_argument("--model", dest="modelo")
     p.add_argument("--task", help="ID da task; sem isso, detecta pela branch ou pasta")
     p.set_defaults(func=cmd_executar)
 
-    p = sub.add_parser("custo", aliases=["cost"], help="mede uso local por task, modelo, agente e papel, sem chamar modelos")
-    p.add_argument("--desde", help="inclui sessões com atividade desde a data ISO")
-    p.add_argument("--por", choices=["task", "modelo", "agente", "papel"], default="task")
-    p.add_argument("--lote", help="IDs separados por vírgula; produz tabela Markdown")
-    p.add_argument("--verificar-orcamento", "--check-budget", dest="verificar_orcamento", metavar="PROJETO", help="confere orcamento.por_task pelo limite superior; medição incompleta falha")
+    p = sub.add_parser("cost", help="mede uso local por task, modelo, agente e papel, sem chamar modelos")
+    p.add_argument("--since", dest="desde", help="inclui sessões com atividade desde a data ISO")
+    p.add_argument("--until", dest="ate", help="inclui sessões iniciadas até a data ISO")
+    p.add_argument("--project", dest="projeto", help="filtra pelo projeto e suas worktrees")
+    p.add_argument("--by", dest="por", choices=["task", "model", "agent", "role", "day"], default="task")
+    p.add_argument("--batch", dest="lote", help="IDs separados por vírgula; produz tabela Markdown")
+    p.add_argument("--check-budget", dest="verificar_orcamento", metavar="PROJETO", help="confere orcamento.por_task pelo limite superior; medição incompleta falha")
     p.add_argument("--json", action="store_true", help="saída estruturada para programas")
     p.set_defaults(func=cmd_custo)
     return parser

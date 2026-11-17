@@ -1,12 +1,65 @@
 # Changelog
 
+## [0.3.0] - 2026-11-17
+
+### Alterado
+
+- **Quebra de compatibilidade:** comandos e opções da CLI passam a inglês, sem apelidos
+  em português. Mensagens, nomes internos, skills e chaves do projeto continuam em português.
+
+| Comando anterior | Comando novo |
+| --- | --- |
+| listar | list |
+| validar | validate |
+| instalar | install |
+| nova-skill | new-skill |
+| executar | run |
+| custo | cost |
+| status | status |
+| atualizar | update |
+
+As opções abaixo recebem o prefixo `--` em ambos os nomes:
+
+| Opção anterior | Opção nova |
+| --- | --- |
+| simular | dry-run |
+| forcar | force |
+| agentes | agents |
+| sem-mcp | no-mcp |
+| entrada | input |
+| protocolo | protocol |
+| modelo | model |
+| descricao | description |
+| versao | version |
+| desde | since |
+| ate | until |
+| por | by |
+| lote | batch |
+| projeto | project |
+| detalhes | details |
+| verificar-orcamento | check-budget |
+
+- Os valores de `--by` passam de `task, modelo, agente, papel, dia` para
+  `task, model, agent, role, day`. As chaves dos relatórios JSON continuam em português.
+
+### Adicionado
+
+- `uninstall <projeto> [--agents ...] [--dry-run] [--yes] [--mcp-global]` remove
+  skills e cópias com marcador, arquivos idênticos aos modelos e entradas MCP idênticas
+  às geradas pelo kit; preserva edições do usuário com aviso e tira o projeto do registro.
+- A prévia lista remoções e pastas que ficarão vazias; a confirmação padrão é negativa.
+  `--dry-run` não escreve nem pergunta. MCP global exige opção e confirmação próprias,
+  inclusive com `--yes`. `uninstall --global` remove só skills globais com marcador.
+- `cost --until`, `--project` e `--by day`: filtros de intervalo e projeto e agrupamento
+  pelo dia UTC de início da sessão, mantendo o consumo completo medido.
+
 ## [0.2.0] - 2026-11-17
 
 - Instalações concorrentes preservam todas as entradas do registro; a remoção de pastas
   inexistentes também preserva registros incluídos durante a atualização.
 - `status` confere cópias com marcador de seleções anteriores de skills e agentes.
 - Instalações locais registram projetos, agentes, versão e data em `KIT_IA_HOME/projetos.json`.
-  Novos comandos `status [projeto] [--detalhes]` e `atualizar [projeto] [--simular]`
+  Novos comandos `status [projeto] [--details]` e `update [projeto] [--dry-run]`
   identificam cópias e configurações pendentes e atualizam os projetos registrados,
   preservando arquivos do usuário e removendo do registro pastas inexistentes.
 - Payload Codex inválido marca medição incompleta mesmo após registros de uso válidos,
@@ -16,9 +69,9 @@
   Registros incompletos ou ilegíveis impedem aprovação; aliases `cost` e `--check-budget`.
 - Campo ausente numa atualização Claude preserva o contador conhecido; OpenAI e Codex
   preservam cache conhecido quando a entrada é desconhecida, sem ocultar excesso de orçamento.
-- Comando `custo` com métricas locais de Claude Code, Codex, Antigravity e `executar`,
+- Comando `cost` com métricas locais de Claude Code, Codex, Antigravity e `run`,
   agrupadas por task, agente, modelo ou papel, em texto, JSON ou Markdown por lote.
-- Registro de uso e duração de `executar`, incluindo `--task`, cache e custo informado pelo
+- Registro de uso e duração de `run`, incluindo `--task`, cache e custo informado pelo
   provedor, sem guardar prompts ou chaves; falhas na gravação emitem aviso.
 - Tarifas configuráveis em `config/precos.json` e verificação de orçamento por task com
   leitor do subconjunto YAML do projeto, sem dependências externas.
@@ -26,7 +79,7 @@
   de preço; OpenCode/Kilo ainda não têm leitor.
 - Orçamento inclui worktrees do mesmo repositório sem incluir outros projetos; troca de
   modelo no Codex distribui diferenças dos acumulados para calcular o custo por modelo.
-- Telemetria opcional malformada emite aviso e preserva a resposta de `executar`;
+- Telemetria opcional malformada emite aviso e preserva a resposta de `run`;
   o leitor YAML aceita apóstrofos em strings sem aspas, como `D'Avila`.
 - Regressões do acumulado Codex preservam o consumo comprovado como limite inferior,
   mantendo a detecção de orçamento excedido, a indicação de uso parcial e o custo desconhecido.
@@ -34,7 +87,7 @@
   evitando atribuir o uso de várias tasks à primeira delas.
 - O leitor YAML preserva espaços e dois-pontos nos valores e rejeita separadores estruturais
   em strings sem aspas com indicação da linha.
-- O filtro `custo --desde` considera o término das chamadas de `executar`, preservando
+- O filtro `cost --since` considera o término das chamadas de `run`, preservando
   todo o consumo e o excesso de orçamento quando a duração atravessa a data do filtro.
 - A deduplicação do Claude conserva o uso atualizado de cada resposta, incluindo cache,
   sem somar parciais repetidas nem ocultar excesso de orçamento.
@@ -49,7 +102,7 @@
 
 Primeira versão publicada.
 
-- CLI `kit.py` com `listar`, `validar`, `instalar`, `nova-skill` e `executar`, usando apenas
+- CLI `kit.py` com `list`, `validate`, `install`, `new-skill` e `run`, usando apenas
   a biblioteca padrão do Python 3.10+.
 - Skills `iniciar-agents-md`, `planejar`, `verificar`, `revisar` e `criar-skill`, no padrão Agent Skills.
 - Processo de trabalho, padrões técnicos por área e modelos de task e CI.

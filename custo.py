@@ -452,7 +452,11 @@ def calcular_custo(item: dict, precos: dict):
 def agrupar(registros: list, por: str, precos: dict) -> list:
     grupos, sessoes, tempos = {}, set(), {}
     for item in registros:
-        chave = item[por]
+        # O dia é o início UTC da sessão; não repartimos tokens sem medição por dia.
+        if por == "dia":
+            chave = item["inicio"].astimezone(timezone.utc).date().isoformat() if item["inicio"] else "(sem data)"
+        else:
+            chave = item[por]
         if chave not in grupos:
             grupos[chave] = {por: chave, "entrada": 0, "saida": 0, "cache_leitura": 0,
                              "cache_escrita": 0, "tokens": 0, "minutos": 0, "custo_usd": 0,
