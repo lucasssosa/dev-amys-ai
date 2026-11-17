@@ -1,0 +1,8 @@
+{
+  "_leia": [
+    "Preencha precos com o nome exato do modelo. Nenhum preço é presumido.",
+    "Formato: modelo -> {entrada, saida, cache_leitura, cache_escrita}, em USD por milhão de tokens.",
+    "O custo informado pelo provedor, incluindo OpenRouter, tem prioridade sobre as tarifas."
+  ],
+  "precos": {}
+}

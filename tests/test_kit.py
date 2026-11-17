@@ -24,6 +24,170 @@ def rodar(*argv: str) -> tuple[int, str, str]:
     return codigo, saida.getvalue(), erro.getvalue()
 
 
+class CustoTest(unittest.TestCase):
+    def test_alias_cost_check_budget_recusa_medicao_incompleta(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            raiz = Path(temporaria)
+            (raiz / "projeto.yaml").write_text("orcamento: {por_task: {tokens: 400000, minutos: 30}}", encoding="utf-8")
+            item = kit.custo.registro("codex", "modelo", "principal", str(raiz), "task/BL-LU-3",
+                kit.custo.data("2026-11-17"), kit.custo.data("2026-11-17"),
+                {"entrada": 1, "saida": 1}, medicao_incompleta=True)
+            with unittest.mock.patch("kit.custo.coletar", return_value=([item], [])):
+                codigo, saida, _ = rodar("cost", "--check-budget", str(raiz / "projeto.yaml"), "--json")
+            dados = json.loads(saida)
+            self.assertEqual(codigo, 1)
+            self.assertEqual(dados["estouros"], [])
+            self.assertEqual(dados["incompletas"], ["BL-LU-3: medição incompleta"])
+
+    def test_claude_atualizacao_desconhecida_preserva_estouro_da_mesma_resposta(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            raiz = Path(temporaria)
+            projeto = raiz / ".kit-ia/projeto.yaml"
+            projeto.parent.mkdir()
+            projeto.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+            fonte = raiz / "claude/a.jsonl"
+            fonte.parent.mkdir()
+            ambiente = {"KIT_IA_HOME": str(raiz / "kit"), "KIT_IA_CLAUDE_DIR": str(fonte.parent),
+                        "KIT_IA_CODEX_DIR": str(raiz / "codex"),
+                        "KIT_IA_ANTIGRAVITY_DIR": str(raiz / "antigravity")}
+            linhas = []
+            with unittest.mock.patch.dict(os.environ, ambiente):
+                for indice, entrada, saida_tokens in ((0, 500000, 10), (1, None, 11)):
+                    with self.subTest(atualizacao=indice):
+                        linhas.append({"requestId": "r1", "timestamp": f"2026-11-16T10:0{indice}:00Z",
+                                       "cwd": str(raiz), "gitBranch": "task/BL-LU-3", "message": {
+                                       "model": "modelo", "usage": {
+                                       "input_tokens": entrada, "output_tokens": saida_tokens}}})
+                        fonte.write_text("\n".join(json.dumps(linha) for linha in linhas), encoding="utf-8")
+                        codigo, saida, erro = rodar("custo", "--verificar-orcamento", str(raiz), "--json")
+                        self.assertEqual(codigo, 1, erro)
+                        dados = json.loads(saida)
+                        self.assertEqual(len(dados["grupos"]), 1)
+                        grupo = dados["grupos"][0]
+                        self.assertEqual(grupo["tokens"], 500000 + saida_tokens)
+                        self.assertEqual(grupo["parcial"], bool(indice))
+                        self.assertIsNone(grupo["custo_usd"])
+                        self.assertEqual(len(dados["estouros"]), 1)
+                        self.assertIn(f"BL-LU-3: tokens {500000 + saida_tokens}.00 > 400000",
+                                      dados["estouros"][0])
+
+    def test_claude_resposta_parcial_preserva_estouro_comprovado(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            raiz = Path(temporaria)
+            projeto = raiz / ".kit-ia/projeto.yaml"
+            projeto.parent.mkdir()
+            projeto.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+            fonte = raiz / "claude/a.jsonl"
+            fonte.parent.mkdir()
+            ambiente = {"KIT_IA_HOME": str(raiz / "kit"),
+                        "KIT_IA_CLAUDE_DIR": str(fonte.parent),
+                        "KIT_IA_CODEX_DIR": str(raiz / "codex"),
+                        "KIT_IA_ANTIGRAVITY_DIR": str(raiz / "antigravity")}
+            linhas = [{"requestId": f"r{indice}", "cwd": str(raiz), "gitBranch": "task/BL-LU-3",
+                       "message": {"model": "falso", "usage": uso}} for indice, uso in enumerate([
+                       {"input_tokens": 500000, "output_tokens": 10},
+                       {"input_tokens": None, "output_tokens": 1}])]
+            with unittest.mock.patch.dict(os.environ, ambiente):
+                for ordem in (linhas, list(reversed(linhas))):
+                    with self.subTest(parcial_primeiro=ordem[0]["requestId"] == "r1"):
+                        fonte.write_text("\n".join(json.dumps(linha) for linha in ordem) + "\n", encoding="utf-8")
+                        codigo, saida, erro = rodar("custo", "--verificar-orcamento", str(raiz), "--json")
+                        self.assertEqual(codigo, 1, erro)
+                        dados = json.loads(saida)
+                        self.assertEqual(len(dados["grupos"]), 1)
+                        grupo = dados["grupos"][0]
+                        self.assertEqual((grupo["entrada"], grupo["saida"], grupo["tokens"]), (500000, 11, 500011))
+                        self.assertTrue(grupo["parcial"])
+                        self.assertIsNone(grupo["custo_usd"])
+                        self.assertEqual(len(dados["estouros"]), 1)
+                        self.assertIn("BL-LU-3: tokens 500011.00 > 400000", dados["estouros"][0])
+
+    def test_claude_uso_atualizado_revela_estouro_do_orcamento(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            raiz = Path(temporaria)
+            projeto = raiz / ".kit-ia/projeto.yaml"
+            projeto.parent.mkdir()
+            projeto.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+            fonte = raiz / "claude/a.jsonl"
+            fonte.parent.mkdir()
+            ambiente = {"KIT_IA_HOME": str(raiz / "kit"),
+                        "KIT_IA_CLAUDE_DIR": str(fonte.parent),
+                        "KIT_IA_CODEX_DIR": str(raiz / "codex"),
+                        "KIT_IA_ANTIGRAVITY_DIR": str(raiz / "antigravity")}
+            linhas = []
+            with unittest.mock.patch.dict(os.environ, ambiente):
+                for saida_tokens, total, esperado in ((35, 399035, 0), (4359, 403359, 1),
+                                                     (4359, 403359, 1)):
+                    with self.subTest(saida_tokens=saida_tokens, repeticoes=len(linhas)):
+                        linhas.append({"requestId": "r1", "timestamp": "2026-11-16T10:00:00Z",
+                                       "cwd": str(raiz), "gitBranch": "task/BL-LU-3", "message": {
+                                       "id": "m1", "model": "falso", "usage": {
+                                       "input_tokens": 399000, "output_tokens": saida_tokens}}})
+                        fonte.write_text("\n".join(json.dumps(linha) for linha in linhas) + "\n",
+                                         encoding="utf-8")
+                        codigo, saida, erro = rodar("custo", "--verificar-orcamento", str(raiz), "--json")
+                        self.assertEqual(codigo, esperado, erro)
+                        dados = json.loads(saida)
+                        self.assertEqual(len(dados["grupos"]), 1)
+                        self.assertEqual(dados["grupos"][0]["tokens"], total)
+                        self.assertEqual(len(dados["estouros"]), esperado)
+                        if esperado:
+                            self.assertIn("BL-LU-3: tokens 403359.00 > 400000", dados["estouros"][0])
+
+    def test_desde_preserva_chamada_que_atravessa_data_e_estouro_do_orcamento(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            raiz = Path(temporaria)
+            projeto = raiz / ".kit-ia/projeto.yaml"
+            projeto.parent.mkdir()
+            projeto.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+            ambiente = {"KIT_IA_HOME": str(raiz),
+                        "KIT_IA_CLAUDE_DIR": str(raiz / "claude"),
+                        "KIT_IA_CODEX_DIR": str(raiz / "codex"),
+                        "KIT_IA_ANTIGRAVITY_DIR": str(raiz / "antigravity")}
+            with unittest.mock.patch.dict(os.environ, ambiente):
+                for duracao, desde, incluido in ((120, None, True), (120, "2026-11-17", True),
+                                                (60, "2026-11-17", True), (59, "2026-11-17", False),
+                                                (120, "2026-11-18", False)):
+                    with self.subTest(duracao=duracao, desde=desde):
+                        (raiz / "uso.jsonl").write_text(json.dumps({
+                            "data": "2026-11-16T23:59:00Z", "duracao_segundos": duracao,
+                            "modelo": "falso", "entrada": 500000, "saida": 0,
+                            "task": "BL-LU-3", "pasta": str(raiz)}) + "\n", encoding="utf-8")
+                        filtros = ["--desde", desde] if desde else []
+                        codigo, saida, erro = rodar("custo", *filtros, "--json")
+                        self.assertEqual(codigo, 0, erro)
+                        dados = json.loads(saida)
+                        if incluido:
+                            self.assertEqual(len(dados["grupos"]), 1)
+                            self.assertEqual(dados["grupos"][0]["tokens"], 500000)
+                            self.assertEqual(dados["grupos"][0]["minutos"], duracao / 60)
+                        else:
+                            self.assertEqual(dados["grupos"], [])
+                        codigo, saida, erro = rodar("custo", *filtros, "--verificar-orcamento",
+                                                   str(raiz), "--json")
+                        self.assertEqual(codigo, int(incluido), erro)
+                        orcamento = json.loads(saida)
+                        self.assertEqual(orcamento["grupos"], dados["grupos"])
+                        self.assertEqual(len(orcamento["estouros"]), int(incluido))
+                        if incluido:
+                            self.assertIn("BL-LU-3: tokens 500000.00 > 400000", orcamento["estouros"][0])
+
+
+class ProjetoYamlTest(unittest.TestCase):
+    def test_orcamento_rejeita_yaml_invalido_sem_traceback(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            projeto = Path(temporaria) / "projeto.yaml"
+            projeto.write_text("nome: antes: depois\norcamento: {por_task: {tokens: 400000, minutos: 30}}",
+                               encoding="utf-8")
+            with unittest.mock.patch("kit.custo.coletar", return_value=([], [])):
+                codigo, _, erro = rodar("custo", "--verificar-orcamento", str(projeto))
+            self.assertEqual(codigo, 1)
+            self.assertIn("linha 1:", erro)
+            self.assertNotIn("Traceback", erro)
+            projeto.write_text("nome: antes :depois", encoding="utf-8")
+            self.assertEqual(kit.ler_projeto(projeto)["nome"], "antes :depois")
+
+
 class FrontmatterTest(unittest.TestCase):
     def test_le_chaves_e_corpo(self):
         dados, corpo = kit.ler_frontmatter("---\nname: x\ndescription: \"faz y\"\n---\n\n# Corpo\n")
@@ -496,10 +660,20 @@ class ProvedorFalso(BaseHTTPRequestHandler):
         if corpo.get("model") == "recusa":
             resposta = {"stop_reason": "refusal", "stop_details": {"category": "teste"}, "content": []}
         elif self.path.endswith("/messages"):
-            resposta = {"stop_reason": "end_turn", "content": [
+            resposta = {"usage": {"input_tokens": 20, "output_tokens": 8}, "stop_reason": "end_turn", "content": [
                 {"type": "thinking", "thinking": ""}, {"type": "text", "text": "resposta anthropic"}]}
         else:
-            resposta = {"choices": [{"message": {"content": "resposta openai"}}]}
+            resposta = {"usage": {"prompt_tokens": 30, "completion_tokens": 10, "cost": .001},
+                        "choices": [{"message": {"content": "resposta openai"}}]}
+        if corpo.get("model") == "telemetria-invalida":
+            resposta["usage"]["prompt_tokens_details"] = [1]
+        if corpo.get("model") in ("cache-leitura-parcial", "cache-escrita-parcial"):
+            campo = ("cache_read_input_tokens" if corpo["model"] == "cache-leitura-parcial"
+                     else "cache_creation_input_tokens")
+            resposta["usage"] = {"input_tokens": None, "output_tokens": 1, campo: 500000}
+        if corpo.get("model") == "openai-cache-parcial":
+            resposta["usage"] = {"prompt_tokens": None, "completion_tokens": 1,
+                                 "prompt_tokens_details": {"cached_tokens": 500000}}
         dados = json.dumps(resposta).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -512,6 +686,33 @@ class ProvedorFalso(BaseHTTPRequestHandler):
 
 
 class ExecutarTest(unittest.TestCase):
+    def test_openai_cache_com_entrada_nula_preserva_estouro_reportado(self):
+        raiz = Path(self.temporaria.name)
+        (raiz / "projeto.yaml").write_text("orcamento: {por_task: {tokens: 400000, minutos: 30}}", encoding="utf-8")
+        ambiente = {"KIT_IA_CLAUDE_DIR": str(raiz / "claude"), "KIT_IA_CODEX_DIR": str(raiz / "codex"),
+                    "KIT_IA_ANTIGRAVITY_DIR": str(raiz / "antigravity")}
+        with unittest.mock.patch.dict(os.environ, ambiente), unittest.mock.patch("kit.custo.Path.cwd", return_value=raiz):
+            codigo, _, erro = rodar("executar", "revisar", "--entrada", "pedido",
+                "--url", self.url, "--modelo", "openai-cache-parcial", "--protocolo", "openai", "--task", "BL-LU-3")
+            self.assertEqual(codigo, 0, erro)
+            uso = json.loads((raiz / "uso.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual((uso["entrada"], uso["saida"]), (500000, 1))
+            self.assertTrue(uso["parcial"])
+            self.assertFalse(uso["custo_confiavel"])
+            codigo, saida, erro = rodar("cost", "--check-budget", str(raiz / "projeto.yaml"), "--json")
+        self.assertEqual(codigo, 1, erro)
+        grupo = json.loads(saida)["grupos"][0]
+        self.assertEqual(grupo["limite_superior_tokens"], 500001)
+        self.assertTrue(grupo["medicao_incompleta"])
+        self.assertIsNone(grupo["custo_usd"])
+
+    def setUp(self):
+        self.temporaria = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporaria.cleanup)
+        self.ambiente = unittest.mock.patch.dict(os.environ, {"KIT_IA_HOME": self.temporaria.name})
+        self.ambiente.start()
+        self.addCleanup(self.ambiente.stop)
+
     @classmethod
     def setUpClass(cls):
         cls.servidor = HTTPServer(("127.0.0.1", 0), ProvedorFalso)
@@ -544,11 +745,88 @@ class ExecutarTest(unittest.TestCase):
         self.assertEqual(req["cabecalhos"]["x-api-key"], "chave-teste")
         self.assertIn("# Planejar uma mudança", req["corpo"]["system"])
 
+    def test_registra_uso_dos_protocolos_sem_chave_ou_conversa(self):
+        for protocolo, entrada, saida, custo in (("openai", 30, 10, .001), ("anthropic", 20, 8, None)):
+            with self.subTest(protocolo=protocolo), unittest.mock.patch.dict(os.environ, {"KIT_IA_CHAVE": "segredo-nao-gravar"}):
+                codigo, _, erro = rodar("executar", "revisar", "--entrada", "conteudo-nao-gravar",
+                    "--url", self.url, "--modelo", "falso", "--protocolo", protocolo, "--task", "BL-LU-3")
+                self.assertEqual(codigo, 0, erro)
+                texto = (Path(self.temporaria.name) / "uso.jsonl").read_text(encoding="utf-8")
+                registro = json.loads(texto.splitlines()[-1])
+                self.assertEqual((registro["entrada"], registro["saida"], registro["custo_usd"]), (entrada, saida, custo))
+                self.assertEqual(registro["task"], "BL-LU-3")
+                self.assertGreaterEqual(registro["duracao_segundos"], 0)
+                self.assertNotIn("segredo-nao-gravar", texto)
+                self.assertNotIn("conteudo-nao-gravar", texto)
+                self.assertNotIn("resposta openai", texto)
+
+    def test_anthropic_cache_com_entrada_desconhecida_preserva_estouro_no_registro(self):
+        raiz = Path(self.temporaria.name)
+        projeto = raiz / ".kit-ia/projeto.yaml"
+        projeto.parent.mkdir()
+        projeto.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+        ambiente = {"KIT_IA_CHAVE": "chave-teste", "KIT_IA_CLAUDE_DIR": str(raiz / "claude"),
+                    "KIT_IA_CODEX_DIR": str(raiz / "codex"),
+                    "KIT_IA_ANTIGRAVITY_DIR": str(raiz / "antigravity")}
+        for modelo in ("cache-leitura-parcial", "cache-escrita-parcial"):
+            with self.subTest(modelo=modelo), unittest.mock.patch.dict(os.environ, ambiente), \
+                    unittest.mock.patch("kit.custo.Path.cwd", return_value=raiz):
+                (raiz / "uso.jsonl").unlink(missing_ok=True)
+                codigo, saida, erro = rodar("executar", "revisar", "--entrada", "pedido",
+                    "--url", self.url, "--modelo", modelo, "--protocolo", "anthropic", "--task", "BL-LU-3")
+                self.assertEqual(codigo, 0, erro)
+                self.assertEqual(saida.strip(), "resposta anthropic")
+                uso = json.loads((raiz / "uso.jsonl").read_text(encoding="utf-8"))
+                self.assertEqual((uso["entrada"], uso["saida"]), (500000, 1))
+                self.assertTrue(uso["parcial"])
+                self.assertFalse(uso["custo_confiavel"])
+                precos = raiz / "config/precos.json"
+                precos.parent.mkdir(exist_ok=True)
+                precos.write_text(json.dumps({"precos": {modelo: {
+                    "entrada": 1, "saida": 1, "cache_leitura": 1, "cache_escrita": 1}}}), encoding="utf-8")
+                with unittest.mock.patch("kit.RAIZ", raiz):
+                    codigo, saida, erro = rodar("custo", "--verificar-orcamento", str(raiz), "--json")
+                self.assertEqual(codigo, 1, erro)
+                dados = json.loads(saida)
+                self.assertEqual(len(dados["grupos"]), 1)
+                grupo = dados["grupos"][0]
+                self.assertEqual(grupo["tokens"], 500001)
+                self.assertTrue(grupo["parcial"])
+                self.assertIsNone(grupo["custo_usd"])
+                self.assertEqual(len(dados["estouros"]), 1)
+                self.assertIn("BL-LU-3: tokens 500001.00 > 400000", dados["estouros"][0])
+
+    def test_falha_de_registro_so_avisa(self):
+        with unittest.mock.patch("kit.custo.registrar_uso", side_effect=OSError("disco indisponível")):
+            codigo, saida, erro = rodar("executar", "revisar", "--entrada", "x", "--url", self.url, "--protocolo", "openai")
+        self.assertEqual(codigo, 0)
+        self.assertIn("resposta openai", saida)
+        self.assertIn("aviso:", erro)
+
+    def test_telemetria_malformada_preserva_resposta_valida(self):
+        codigo, saida, erro = rodar("executar", "revisar", "--entrada", "x", "--url", self.url,
+                                    "--modelo", "telemetria-invalida", "--protocolo", "openai")
+        self.assertEqual(codigo, 0)
+        self.assertEqual(saida.strip(), "resposta openai")
+        self.assertIn("aviso: telemetria de uso inválida", erro)
+        self.assertNotIn("Traceback", erro)
+        self.assertFalse((Path(self.temporaria.name) / "uso.jsonl").exists())
+
+    def test_custo_cli_sem_fontes_e_erro_de_data(self):
+        with unittest.mock.patch("kit.custo.coletar", return_value=([], [])):
+            codigo, saida, _ = rodar("custo", "--json")
+            self.assertEqual(codigo, 0)
+            self.assertEqual(json.loads(saida)["grupos"], [])
+            self.assertEqual(rodar("custo", "--desde", "invalida")[0], 1)
+
     def test_provedor_fora_do_ar_vira_mensagem(self):
         codigo, _, erro = rodar("executar", "revisar", "--entrada", "x",
                                 "--url", "http://127.0.0.1:1/v1", "--protocolo", "openai")
         self.assertEqual(codigo, 1)
         self.assertIn("não consegui conectar", erro)
+        registro = json.loads((Path(self.temporaria.name) / "uso.jsonl").read_text(encoding="utf-8"))
+        self.assertIsNone(registro["entrada"])
+        self.assertGreaterEqual(registro["duracao_segundos"], 0)
 
     def test_skill_inexistente_e_erro(self):
         codigo, _, erro = rodar("executar", "nao-existe", "--entrada", "x")

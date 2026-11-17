@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.2.0] - 2026-11-17
+
+- Payload Codex inválido marca medição incompleta mesmo após registros de uso válidos,
+  preservando os tokens conhecidos e impedindo aprovação do orçamento, inclusive com filtro de data.
+- Orçamento conservador separado da estimativa: máximos por contador de resposta Claude
+  e por sessão Codex, com limite superior de tokens e tempo visível no relatório.
+  Registros incompletos ou ilegíveis impedem aprovação; aliases `cost` e `--check-budget`.
+- Campo ausente numa atualização Claude preserva o contador conhecido; OpenAI e Codex
+  preservam cache conhecido quando a entrada é desconhecida, sem ocultar excesso de orçamento.
+- Comando `custo` com métricas locais de Claude Code, Codex, Antigravity e `executar`,
+  agrupadas por task, agente, modelo ou papel, em texto, JSON ou Markdown por lote.
+- Registro de uso e duração de `executar`, incluindo `--task`, cache e custo informado pelo
+  provedor, sem guardar prompts ou chaves; falhas na gravação emitem aviso.
+- Tarifas configuráveis em `config/precos.json` e verificação de orçamento por task com
+  leitor do subconjunto YAML do projeto, sem dependências externas.
+- Tokens desconhecidos e limitações dos formatos locais são explicitados, sem estimativas
+  de preço; OpenCode/Kilo ainda não têm leitor.
+- Orçamento inclui worktrees do mesmo repositório sem incluir outros projetos; troca de
+  modelo no Codex distribui diferenças dos acumulados para calcular o custo por modelo.
+- Telemetria opcional malformada emite aviso e preserva a resposta de `executar`;
+  o leitor YAML aceita apóstrofos em strings sem aspas, como `D'Avila`.
+- Regressões do acumulado Codex preservam o consumo comprovado como limite inferior,
+  mantendo a detecção de orçamento excedido, a indicação de uso parcial e o custo desconhecido.
+- Sessões Codex retomadas separam consumo e intervalos por modelo, pasta, branch e papel,
+  evitando atribuir o uso de várias tasks à primeira delas.
+- O leitor YAML preserva espaços e dois-pontos nos valores e rejeita separadores estruturais
+  em strings sem aspas com indicação da linha.
+- O filtro `custo --desde` considera o término das chamadas de `executar`, preservando
+  todo o consumo e o excesso de orçamento quando a duração atravessa a data do filtro.
+- A deduplicação do Claude conserva o uso atualizado de cada resposta, incluindo cache,
+  sem somar parciais repetidas nem ocultar excesso de orçamento.
+- Respostas Claude com contadores desconhecidos preservam os subtotais comprovados de
+  entrada, saída e cache, com medição parcial e custo desconhecido, sem ocultar orçamento excedido.
+- Atualizações parciais da mesma resposta Claude preservam o último valor conhecido de cada
+  contador; cópias fora de ordem não apagam consumo comprovado nem duplicam tokens.
+- Entrada Anthropic desconhecida mantém cache conhecido no total mínimo de tokens;
+  a indicação de medição parcial e custo desconhecido acompanha o registro e o orçamento.
+
 ## [0.1.2] - 2026-11-17
 
 Primeira versão publicada.

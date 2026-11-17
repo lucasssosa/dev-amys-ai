@@ -21,6 +21,8 @@ Explique o porquê das decisões técnicas.
 - Validar skills, links da documentação e config: `python kit.py validar`
 - Instalar num projeto: `python kit.py instalar <pasta> [--agentes claude,universal] [--simular]`
 - Executar uma skill num modelo: `git diff | python kit.py executar revisar` (config no `.env`)
+- Medir uso: `python kit.py custo --desde 2026-11-16 --por agente` (ou `--json`, `--lote ID,ID`)
+- Conferir orçamento: `python kit.py custo --verificar-orcamento <pasta do projeto>`
 - Testes: `python -m unittest discover -s tests -v`
 
 ## Arquitetura (não quebrar)
