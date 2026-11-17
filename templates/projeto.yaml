@@ -1,0 +1,86 @@
+# Configuração do projeto para o dev-amys-ai (kit-ia).
+# Este arquivo é do PROJETO: o kit nunca o sobrescreve. Ajuste à vontade.
+# Hoje é lido pelos agentes (processo em .kit-ia/processo/).
+# A leitura pelos scripts do kit ainda não foi implementada.
+
+projeto:
+  nome: {{nome}}
+  # Áreas que valem neste projeto. Decidem quais .kit-ia/padroes/ ler e quais gates rodar.
+  # Opções: backend, frontend, design, infra, mensageria, seguranca, performance, docs
+  areas: []
+
+planejamento:
+  modo: frentes              # frentes (objetivo, sem prazo) | sprints (prazo fixo)
+  id_prefixo: XX             # sigla do dev nos IDs (BL-XX-12); evita colisão entre devs
+
+hospedagem:
+  provedor: nenhum           # github | azure | gitlab | nenhum
+  # Comando para abrir pull request. Exemplos:
+  #   github: gh pr create --base {destino} --head {origem} --title "{titulo}" --body-file {corpo}
+  #   azure:  az repos pr create --source-branch {origem} --target-branch {destino} --title "{titulo}" --description @{corpo}
+  #   gitlab: glab mr create --source-branch {origem} --target-branch {destino} --title "{titulo}"
+  abrir_pr: ""
+
+branches:
+  principal: main
+  destinos: [main]           # ordem da promoção. Com homologação: [homologacao, main]
+  release: "release/{data}-{frente}"
+  task: "task/{id}-{slug}"   # ex. de empresa: "feature/{data}-{chamado}-{slug}"
+  hotfix: "hotfix/{id}-{slug}"
+
+worktrees:
+  modo: por_task             # por_task | por_lote | nenhum
+  pasta: "../{repo}-wt"
+  setup: ""                  # roda em cada worktree nova (ex.: "npm ci")
+  portas: ""                 # faixa reservada para worktrees (ex.: "4300-4399")
+
+autonomia:
+  subagentes: dentro_do_plano   # dispara sem perguntar só o que o plano aprovado prevê
+  promover_principal: perguntar
+
+orcamento:
+  por_task: { tokens: 400000, minutos: 30 }
+  por_lote: { tokens: 2000000, minutos: 120 }
+  ao_estourar: parar_e_perguntar
+
+modelos:                     # qual modelo cada papel usa (o agente decide o nome exato)
+  coordenador: ""
+  executor: ""
+  integrador: ""
+  revisor: ""
+  leitor: ""
+
+gates:
+  # O QUE roda em cada nível. Os nomes apontam para `comandos`.
+  padrao:
+    tarefa: [compilar, lint, testes_afetados]
+    integracao: [build, testes]
+    promocao: [e2e]
+  # O que cada tipo de task ACRESCENTA ao padrão.
+  por_tipo:
+    frontend:
+      promocao: [auditoria_pagina, capturas, validacao_visual]
+    design:
+      promocao: [capturas, validacao_visual]
+    seguranca:
+      integracao: [varredura_seguranca]
+    performance:
+      integracao: [carga]
+
+comandos:
+  # COMO cada item roda neste projeto. Vazio = não configurado: o agente avisa e não inventa.
+  # A skill iniciar-agents-md ajuda a preencher. {arquivos} = arquivos da task.
+  compilar: ""
+  lint: ""
+  testes_afetados: ""
+  build: ""
+  testes: ""
+  e2e: ""
+  auditoria_pagina: ""
+  capturas: ""
+  varredura_seguranca: ""
+  carga: ""
+  validacao_visual: "usuário"   # feito pelo usuário, com as capturas
+
+limpeza:
+  modo: perguntar            # perguntar | apos_promocao

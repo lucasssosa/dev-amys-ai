@@ -1,0 +1,8 @@
+# Finais de linha padronizados (LF) no repositório, em qualquer sistema operacional.
+# Evita diffs gigantes e enganosos quando alguém edita no Windows.
+* text=auto eol=lf
+
+# Scripts do Windows precisam de CRLF para rodar.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf

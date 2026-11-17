@@ -1,0 +1,25 @@
+# CI do próprio kit: testes e validação a cada push e pull request.
+# Roda no Linux e no Windows porque o kit é usado nos dois (caminhos, finais de linha, acentos).
+name: testes
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  testes:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Testes
+        run: python -m unittest discover -s tests -v
+      - name: Validar skills, links e config
+        run: python kit.py validar

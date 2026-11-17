@@ -1,0 +1,20 @@
+# Segredos (chaves de IA etc.)
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Cópias geradas pelo `python kit.py instalar .` neste próprio repositório:
+# a fonte da verdade é skills/ e config/mcp.json
+/.claude/skills/
+/.agents/
+/.mcp.json
+/.kit-ia/
+.claude/settings.local.json
+
+# Editor / SO
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store

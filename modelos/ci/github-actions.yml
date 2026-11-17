@@ -1,0 +1,30 @@
+# Modelo de CI para projetos hospedados no GitHub.
+# Copie para .github/workflows/ci.yml e troque cada passo pelos comandos de
+# `comandos` do .kit-ia/projeto.yaml. Os passos falham de propósito (exit 1)
+# até serem configurados: um CI que "passa" sem testar nada é pior que nenhum.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main, "release/**", homologacao]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Prepare a stack do projeto, por exemplo:
+      #   - uses: actions/setup-node@v4
+      #     with: { node-version: 20, cache: npm }
+      #   - uses: actions/setup-java@v4
+      #     with: { distribution: temurin, java-version: 21, cache: maven }
+
+      - name: Build
+        run: echo "Configure o comando 'build' do projeto.yaml" && exit 1
+
+      - name: Testes
+        run: echo "Configure o comando 'testes' do projeto.yaml" && exit 1
+
+      # Opcional: E2E, auditoria de página, varredura de segurança.

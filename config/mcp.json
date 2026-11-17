@@ -1,0 +1,15 @@
+{
+  "_leia": [
+    "Servidores MCP instalados em todo projeto, no formato do kit (o kit.py traduz para cada agente).",
+    "tipo 'http': precisa de 'url' (opcional: 'cabecalhos').",
+    "tipo 'stdio': precisa de 'comando' (opcional: 'args', 'env').",
+    "Nunca coloque chave aqui: use \"env\": {\"CHAVE\": \"${CHAVE}\"} e defina a variável no sistema."
+  ],
+  "servidores": {
+    "context7": {
+      "descricao": "Documentação atual de bibliotecas, em vez do que o modelo decorou no treino",
+      "tipo": "http",
+      "url": "https://mcp.context7.com/mcp"
+    }
+  }
+}

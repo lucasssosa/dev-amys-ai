@@ -1,0 +1,56 @@
+{
+  "_leia": [
+    "Onde cada agente de código procura skills e servidores MCP.",
+    "Os caminhos mudam entre versões dos agentes: se um agente parar de achar as skills,",
+    "corrija aqui (não no kit.py). 'skills' é relativo ao projeto; 'skills_global' é para --global.",
+    "Formatos de MCP aceitos: claude, cursor, vscode, gemini, opencode, comando-codex, comando-antigravity.",
+    "executaveis_alternativos: caminhos globais consultados quando a CLI não está no PATH (aceitam glob)."
+  ],
+  "agentes": {
+    "universal": {
+      "descricao": "Padrão aberto (.agents/skills + AGENTS.md): Codex, Cursor, Copilot, OpenCode e outros",
+      "skills": ".agents/skills",
+      "skills_global": "~/.agents/skills"
+    },
+    "claude": {
+      "descricao": "Claude Code",
+      "skills": ".claude/skills",
+      "skills_global": "~/.claude/skills",
+      "mcp": { "arquivo": ".mcp.json", "formato": "claude" }
+    },
+    "cursor": {
+      "descricao": "Cursor",
+      "mcp": { "arquivo": ".cursor/mcp.json", "formato": "cursor" }
+    },
+    "copilot": {
+      "descricao": "GitHub Copilot no VS Code",
+      "mcp": { "arquivo": ".vscode/mcp.json", "formato": "vscode" }
+    },
+    "gemini": {
+      "descricao": "Gemini CLI legado (também passa a ler AGENTS.md)",
+      "mcp": { "arquivo": ".gemini/settings.json", "formato": "gemini" }
+    },
+    "opencode": {
+      "descricao": "OpenCode / Kilo",
+      "mcp": { "arquivo": "opencode.json", "formato": "opencode" }
+    },
+    "codex": {
+      "descricao": "OpenAI Codex CLI",
+      "skills": ".agents/skills",
+      "skills_global": "~/.agents/skills",
+      "mcp": {
+        "formato": "comando-codex",
+        "executaveis_alternativos": ["${LOCALAPPDATA}/OpenAI/Codex/bin/*/codex.exe"]
+      }
+    },
+    "antigravity": {
+      "descricao": "Google Antigravity CLI (agy), sucessor do Gemini CLI",
+      "skills": ".agents/skills",
+      "skills_global": "~/.agents/skills",
+      "mcp": {
+        "formato": "comando-antigravity",
+        "executaveis_alternativos": ["~/.gemini/bin/agy.exe"]
+      }
+    }
+  }
+}

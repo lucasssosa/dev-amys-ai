@@ -1,0 +1,31 @@
+# Modelo de CI para projetos hospedados no Azure DevOps.
+# Copie para azure-pipelines.yml (ou para a pasta de pipelines do projeto) e troque cada
+# passo pelos comandos de `comandos` do .kit-ia/projeto.yaml. Os passos falham de propósito
+# (exit 1) até serem configurados: um CI que "passa" sem testar nada é pior que nenhum.
+trigger:
+  branches:
+    include: [main, release/*, homologacao]
+
+pr:
+  branches:
+    include: ['*']
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+
+  # Prepare a stack do projeto, por exemplo:
+  #   - task: NodeTool@0
+  #     inputs: { versionSpec: '20.x' }
+  #   - task: JavaToolInstaller@0
+  #     inputs: { versionSpec: '21', jdkArchitectureOption: 'x64', jdkSourceOption: 'PreInstalled' }
+
+  - script: echo "Configure o comando 'build' do projeto.yaml" && exit 1
+    displayName: Build
+
+  - script: echo "Configure o comando 'testes' do projeto.yaml" && exit 1
+    displayName: Testes
+
+  # Opcional: E2E, auditoria de página, varredura de segurança.
