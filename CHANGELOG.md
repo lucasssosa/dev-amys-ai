@@ -22,6 +22,8 @@
   em strings sem aspas com indicação da linha.
 - O filtro `custo --desde` considera o término das chamadas de `executar`, preservando
   todo o consumo e o excesso de orçamento quando a duração atravessa a data do filtro.
+- A deduplicação do Claude conserva o uso atualizado de cada resposta, incluindo cache,
+  sem somar parciais repetidas nem ocultar excesso de orçamento.
 
 ## [0.1.2] - 2026-11-17
 

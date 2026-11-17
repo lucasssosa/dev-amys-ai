@@ -105,7 +105,7 @@ def registro(agente, modelo, papel, pasta, branch, inicio, fim, uso, **extras):
 
 
 def ler_claude(pasta: Path, avisos: list) -> list:
-    registros, vistos = [], set()
+    registros, respostas = [], {}
     for arquivo in sorted(pasta.rglob("*.jsonl")):
         grupos = {}
         primeira = ultima = None
@@ -132,11 +132,13 @@ def ler_claude(pasta: Path, avisos: list) -> list:
             if not isinstance(mensagem, dict) or not mensagem.get("usage"):
                 continue
             identificador = linha.get("requestId") or mensagem.get("id")
-            if identificador and identificador in vistos:
-                continue
-            if identificador:
-                vistos.add(identificador)
             uso = mensagem["usage"]
+            if identificador and identificador in respostas:
+                grupo, instante_uso, _ = respostas[identificador]
+                # Cópias antigas em outros arquivos não podem apagar a atualização de uso.
+                if instante is None or instante_uso is None or instante >= instante_uso:
+                    respostas[identificador] = (grupo, instante, uso)
+                continue
             papel = "subagente" if linha.get("isSidechain") or "subagents" in arquivo.parts else "principal"
             local, branch = linha.get("cwd", ""), linha.get("gitBranch", "")
             chave = (mensagem.get("model"), papel, local, branch)
@@ -147,17 +149,22 @@ def ler_claude(pasta: Path, avisos: list) -> list:
             atual = chave
             grupo["minutos"] += pendentes
             pendentes = 0
-            for destino, origem in (("entrada", "input_tokens"), ("saida", "output_tokens"),
-                                    ("cache_leitura", "cache_read_input_tokens"),
-                                    ("cache_escrita", "cache_creation_input_tokens")):
-                valor = numero(uso.get(origem, 0))
-                grupo[destino] = None if valor is None or grupo[destino] is None else grupo[destino] + valor
-            # O Claude informa entrada sem cache; normalizamos para o total de entrada.
+            # Somar só após consolidar evita contar tanto a parcial quanto a resposta final.
+            # Sem identificador, não há evidência de duplicação: cada linha conta separadamente.
+            respostas[identificador or object()] = (grupo, instante, uso)
         for grupo in grupos.values():
-            if grupo["entrada"] is not None:
-                grupo["entrada"] += (grupo["cache_leitura"] or 0) + (grupo["cache_escrita"] or 0)
             grupo["inicio"], grupo["fim"] = primeira, ultima
         registros.extend(grupos.values())
+    for grupo, _, uso in respostas.values():
+        for destino, origem in (("entrada", "input_tokens"), ("saida", "output_tokens"),
+                                ("cache_leitura", "cache_read_input_tokens"),
+                                ("cache_escrita", "cache_creation_input_tokens")):
+            valor = numero(uso.get(origem, 0))
+            grupo[destino] = None if valor is None or grupo[destino] is None else grupo[destino] + valor
+    for grupo in registros:
+        # O Claude informa entrada sem cache; normalizamos para o total de entrada.
+        if grupo["entrada"] is not None:
+            grupo["entrada"] += (grupo["cache_leitura"] or 0) + (grupo["cache_escrita"] or 0)
     return registros
 
 

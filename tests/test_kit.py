@@ -25,6 +25,38 @@ def rodar(*argv: str) -> tuple[int, str, str]:
 
 
 class CustoTest(unittest.TestCase):
+    def test_claude_uso_atualizado_revela_estouro_do_orcamento(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            raiz = Path(temporaria)
+            projeto = raiz / ".kit-ia/projeto.yaml"
+            projeto.parent.mkdir()
+            projeto.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+            fonte = raiz / "claude/a.jsonl"
+            fonte.parent.mkdir()
+            ambiente = {"KIT_IA_HOME": str(raiz / "kit"),
+                        "KIT_IA_CLAUDE_DIR": str(fonte.parent),
+                        "KIT_IA_CODEX_DIR": str(raiz / "codex"),
+                        "KIT_IA_ANTIGRAVITY_DIR": str(raiz / "antigravity")}
+            linhas = []
+            with unittest.mock.patch.dict(os.environ, ambiente):
+                for saida_tokens, total, esperado in ((35, 399035, 0), (4359, 403359, 1),
+                                                     (4359, 403359, 1)):
+                    with self.subTest(saida_tokens=saida_tokens, repeticoes=len(linhas)):
+                        linhas.append({"requestId": "r1", "timestamp": "2026-11-16T10:00:00Z",
+                                       "cwd": str(raiz), "gitBranch": "task/BL-LU-3", "message": {
+                                       "id": "m1", "model": "falso", "usage": {
+                                       "input_tokens": 399000, "output_tokens": saida_tokens}}})
+                        fonte.write_text("\n".join(json.dumps(linha) for linha in linhas) + "\n",
+                                         encoding="utf-8")
+                        codigo, saida, erro = rodar("custo", "--verificar-orcamento", str(raiz), "--json")
+                        self.assertEqual(codigo, esperado, erro)
+                        dados = json.loads(saida)
+                        self.assertEqual(len(dados["grupos"]), 1)
+                        self.assertEqual(dados["grupos"][0]["tokens"], total)
+                        self.assertEqual(len(dados["estouros"]), esperado)
+                        if esperado:
+                            self.assertIn("BL-LU-3: tokens 403359.00 > 400000", dados["estouros"][0])
+
     def test_desde_preserva_chamada_que_atravessa_data_e_estouro_do_orcamento(self):
         with tempfile.TemporaryDirectory() as temporaria:
             raiz = Path(temporaria)

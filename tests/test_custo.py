@@ -59,6 +59,43 @@ class MedicaoTest(unittest.TestCase):
         self.assertEqual(grupos[0]["minutos"], 2)
         self.assertIsNone(grupos[0]["custo_usd"])
 
+    def test_claude_consolida_uso_atualizado_sem_duplicar_resposta(self):
+        for identificador in ("requestId", "message.id"):
+            for outro_arquivo in (False, True):
+                with self.subTest(identificador=identificador, outro_arquivo=outro_arquivo):
+                    linha = {"timestamp": "2026-11-16T10:00:00Z", "cwd": str(self.raiz),
+                             "gitBranch": "task/BL-LU-3", "message": {"id": "m1", "model": "modelo",
+                             "usage": {"input_tokens": 399000, "output_tokens": 35}}}
+                    if identificador == "requestId":
+                        linha["requestId"] = "r1"
+                    atualizada = {**linha, "timestamp": "2026-11-16T10:02:00Z", "message": {
+                        **linha["message"], "usage": {"input_tokens": 399000, "output_tokens": 4359}}}
+                    # A cópia antiga no arquivo seguinte não pode apagar a atualização mais recente.
+                    self.gravar("claude/a.jsonl", [linha, atualizada, atualizada])
+                    if outro_arquivo:
+                        self.gravar("claude/b.jsonl", [linha])
+                    else:
+                        (self.raiz / "claude/b.jsonl").unlink(missing_ok=True)
+                    registros, avisos = custo.coletar()
+                    self.assertFalse(avisos)
+                    self.assertEqual(len(registros), 1)
+                    grupo = custo.agrupar(registros, "task", {})[0]
+                    self.assertEqual((grupo["entrada"], grupo["saida"], grupo["tokens"]),
+                                     (399000, 4359, 403359))
+                    self.assertEqual(grupo["minutos"], 2)
+
+    def test_claude_atualiza_cache_sem_somar_snapshots(self):
+        linha = {"requestId": "r1", "message": {"id": "m1", "model": "modelo", "usage": {
+            "input_tokens": 10, "output_tokens": 1, "cache_read_input_tokens": 20,
+            "cache_creation_input_tokens": 30}}}
+        atualizada = {**linha, "message": {**linha["message"], "usage": {
+            "input_tokens": 15, "output_tokens": 5, "cache_read_input_tokens": 25,
+            "cache_creation_input_tokens": 35}}}
+        self.gravar("claude/a.jsonl", [linha, atualizada, atualizada])
+        grupo = custo.agrupar(custo.coletar()[0], "task", {})[0]
+        self.assertEqual((grupo["entrada"], grupo["saida"], grupo["cache_leitura"],
+                          grupo["cache_escrita"], grupo["tokens"]), (75, 5, 25, 35, 80))
+
     def codex(self):
         return self.gravar("codex/2026/a.jsonl", [
             {"type": "session_meta", "timestamp": "2026-11-16T10:00:00Z", "payload": {

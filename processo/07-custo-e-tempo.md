@@ -45,7 +45,9 @@ Use `--por task`, `modelo`, `agente` ou `papel`. A task vem da branch ou da past
 (`BL-<sigla>-<número>`); chamadas diretas aceitam `executar --task ID`. Sem ID, fica
 `(sem task)`. O filtro de data inclui a sessão inteira se houve atividade no período.
 Entrada inclui cache; as colunas de cache são detalhamento, não tokens adicionais.
-O Claude é deduplicado por requestId (ou message.id); no Codex, diferenças entre totais
+O Claude é deduplicado por requestId (ou message.id), contando uma vez o uso mais recente
+de cada resposta. Em horários iguais ou ausentes, prevalece a última ocorrência lida.
+No Codex, diferenças entre totais
 acumulados pertencem ao modelo ativo no evento, sem somar cache ou raciocínio novamente.
 Acumulados regressivos geram aviso e uso parcial, com custo desconhecido. O maior valor
 comprovado de cada contador é preservado como limite inferior: só o que ultrapassa esse
