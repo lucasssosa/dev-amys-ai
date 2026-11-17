@@ -241,7 +241,8 @@ def ler_codex(pasta: Path, avisos: list) -> list:
             if instante:
                 primeira = min(primeira or instante, instante)
                 ultima = max(ultima or instante, instante)
-            carga = linha.get("payload") or {}
+            # Valores vazios inválidos também precisam bloquear a aprovação do orçamento.
+            carga = linha.get("payload")
             if not isinstance(carga, dict):
                 avisos.append(f"{arquivo.name}: payload inválido")
                 continue

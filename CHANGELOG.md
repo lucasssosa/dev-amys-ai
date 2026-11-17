@@ -2,6 +2,8 @@
 
 ## [0.2.0] - 2026-11-17
 
+- Payload Codex inválido marca medição incompleta mesmo após registros de uso válidos,
+  preservando os tokens conhecidos e impedindo aprovação do orçamento, inclusive com filtro de data.
 - Orçamento conservador separado da estimativa: máximos por contador de resposta Claude
   e por sessão Codex, com limite superior de tokens e tempo visível no relatório.
   Registros incompletos ou ilegíveis impedem aprovação; aliases `cost` e `--check-budget`.

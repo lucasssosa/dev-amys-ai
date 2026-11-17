@@ -377,6 +377,32 @@ class MedicaoTest(unittest.TestCase):
                     self.assertTrue(json.loads(saida)["incompletas"])
                     arquivo.unlink()
 
+    def test_codex_payload_invalido_apos_uso_valido_impede_aprovar_orcamento(self):
+        self.preparar_orcamento()
+        validas = [
+            {"type": "session_meta", "timestamp": "2026-11-16T10:00:00Z", "payload": {
+                "cwd": str(self.raiz), "model": "modelo", "git": {"branch": "task/BL-LU-3"}}},
+            {"type": "event_msg", "timestamp": "2026-11-16T10:01:00Z", "payload": {
+                "type": "token_count", "info": {"total_token_usage": {
+                    "input_tokens": 100, "output_tokens": 1}}}}]
+        self.gravar("codex/a.jsonl", validas)
+        self.assertEqual(self.rodar("--check-budget", str(self.raiz), "--json")[0], 0)
+        for tipo in ("event_msg", "session_meta", "turn_context"):
+            for carga in ([], "", 0, False, None, [1], "inválido"):
+                for filtro in ((), ("--desde", "2026-11-17")):
+                    with self.subTest(tipo=tipo, payload=carga, filtro=filtro):
+                        self.gravar("codex/a.jsonl", validas + [{"type": tipo, "payload": carga}])
+                        codigo, saida, erro = self.rodar("--check-budget", str(self.raiz),
+                                                       "--json", *filtro)
+                        dados = json.loads(saida)
+                        self.assertEqual(codigo, 1, erro)
+                        self.assertEqual(dados["incompletas"], ["BL-LU-3: medição incompleta"])
+                        self.assertTrue(any("payload inválido" in aviso for aviso in dados["avisos"]))
+                        grupo = dados["grupos"][0]
+                        self.assertEqual(grupo["tokens"], 101)
+                        self.assertEqual(grupo["limite_superior_tokens"], 101)
+                        self.assertTrue(grupo["medicao_incompleta"])
+
     def test_orcamento_recusa_corrupcao_com_contexto_antigo_e_data_filtrada(self):
         self.preparar_orcamento(tokens=999999999)
         arquivo = self.codex()
