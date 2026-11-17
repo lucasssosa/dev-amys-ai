@@ -2,6 +2,10 @@
 
 ## [0.2.0] - 2026-11-17
 
+- Instalações locais registram projetos, agentes, versão e data em `KIT_IA_HOME/projetos.json`.
+  Novos comandos `status [projeto] [--detalhes]` e `atualizar [projeto] [--simular]`
+  identificam cópias e configurações pendentes e atualizam os projetos registrados,
+  preservando arquivos do usuário e removendo do registro pastas inexistentes.
 - Payload Codex inválido marca medição incompleta mesmo após registros de uso válidos,
   preservando os tokens conhecidos e impedindo aprovação do orçamento, inclusive com filtro de data.
 - Orçamento conservador separado da estimativa: máximos por contador de resposta Claude

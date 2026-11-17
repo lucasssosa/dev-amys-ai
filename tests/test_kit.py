@@ -373,6 +373,11 @@ class InstalarTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.projeto = Path(self._tmp.name)
+        registro = tempfile.TemporaryDirectory()
+        self.addCleanup(registro.cleanup)
+        ambiente = unittest.mock.patch.dict(os.environ, {"KIT_IA_HOME": str(Path(registro.name) / "kit")})
+        ambiente.start()
+        self.addCleanup(ambiente.stop)
         # Guarda de todos os testes de instalação: nenhum teste pode chamar a CLI real.
         executar = unittest.mock.patch.object(kit.subprocess, "run")
         self.executar = executar.start()
@@ -628,6 +633,243 @@ class InstalarTest(unittest.TestCase):
         codigo, _, erro = rodar("instalar", str(self.projeto / "nao-existe"))
         self.assertEqual(codigo, 1)
         self.assertIn("não existe", erro)
+
+
+class AtualizarProjetosTest(unittest.TestCase):
+    def setUp(self):
+        temporaria = tempfile.TemporaryDirectory()
+        self.addCleanup(temporaria.cleanup)
+        self.raiz = Path(temporaria.name)
+        self.projeto = self.raiz / "projeto com espaços"
+        self.projeto.mkdir()
+        self.registro = self.raiz / "perfil/projetos.json"
+        ambiente = unittest.mock.patch.dict(os.environ, {"KIT_IA_HOME": str(self.registro.parent)})
+        ambiente.start()
+        self.addCleanup(ambiente.stop)
+
+    def instalar(self, projeto=None, *opcoes):
+        codigo, _, erro = rodar("instalar", str(projeto or self.projeto), "--agentes", "claude,universal", *opcoes)
+        self.assertEqual(codigo, 0, erro)
+
+    def registros(self):
+        return json.loads(self.registro.read_text(encoding="utf-8"))
+
+    def snapshot(self):
+        return {p.relative_to(self.raiz).as_posix(): (p.read_bytes(), p.stat().st_mtime_ns)
+                for p in self.raiz.rglob("*") if p.is_file()}
+
+    def test_registra_caminho_absoluto_agentes_versao_data_sem_duplicar(self):
+        self.instalar()
+        self.instalar()
+        registros = self.registros()
+        self.assertEqual(list(registros), [str(self.projeto.resolve())])
+        dados = registros[str(self.projeto.resolve())]
+        self.assertEqual(dados["agentes"], ["claude", "universal"])
+        self.assertEqual(dados["versao"], kit.VERSAO)
+        self.assertIsNotNone(kit.custo.data(dados["data"]))
+        codigo, _, erro = rodar("instalar", str(self.projeto), "--agentes", "universal")
+        self.assertEqual(codigo, 0, erro)
+        self.assertEqual(self.registros()[str(self.projeto.resolve())]["agentes"], ["universal"])
+
+    def test_simulacao_e_instalacao_global_nao_registram(self):
+        self.instalar(None, "--simular")
+        self.assertFalse(self.registro.exists())
+        config = {"universal": {"skills_global": str(self.raiz / "globais")}}
+        with unittest.mock.patch.object(kit, "carregar_agentes", return_value=config):
+            codigo, _, erro = rodar("instalar", "--global", "--agentes", "universal")
+        self.assertEqual(codigo, 0, erro)
+        self.assertFalse(self.registro.exists())
+        self.assertTrue((self.raiz / "globais/verificar/SKILL.md").is_file())
+
+    def test_status_limpo_uma_linha_por_projeto_e_filtro(self):
+        self.instalar()
+        outro = self.raiz / "outro"
+        outro.mkdir()
+        self.instalar(outro)
+        antes = self.snapshot()
+        codigo, saida, erro = rodar("status")
+        self.assertEqual(codigo, 0, erro)
+        self.assertEqual(len(saida.splitlines()), 2)
+        self.assertEqual(saida.count("em dia"), 2)
+        _, saida, _ = rodar("status", str(outro), "--detalhes")
+        self.assertEqual(len(saida.splitlines()), 1)
+        self.assertNotIn(str(self.projeto), saida)
+        self.assertEqual(self.snapshot(), antes)
+
+    def test_status_detecta_versao_copias_yaml_e_instrucoes(self):
+        self.instalar()
+        (self.projeto / ".kit-ia/VERSAO").write_text("0.1.2\n", encoding="utf-8")
+        for relativo in (".kit-ia/processo/00-nucleo.md", ".claude/skills/verificar/SKILL.md"):
+            (self.projeto / relativo).write_text("editada à mão", encoding="utf-8")
+        yaml = self.projeto / ".kit-ia/projeto.yaml"
+        yaml.write_text(yaml.read_text(encoding="utf-8").replace("  principal: main\n", "")
+                        .replace("limpeza:\n  modo: perguntar", ""), encoding="utf-8")
+        (self.projeto / "AGENTS.md").write_text("meu projeto", encoding="utf-8")
+        (self.projeto / "CLAUDE.md").write_text("minhas instruções", encoding="utf-8")
+        codigo, saida, erro = rodar("status", "--detalhes")
+        self.assertEqual(codigo, 0, erro)
+        for trecho in ("instalada 0.1.2", f"atual {kit.VERSAO}", "cópia desatualizada: .kit-ia/processo",
+                       "cópia desatualizada: .claude/skills/verificar", "projeto.yaml: branches.principal",
+                       "projeto.yaml: limpeza", "AGENTS.md não aponta", "CLAUDE.md não importa"):
+            self.assertIn(trecho, saida)
+        _, curta, _ = rodar("status")
+        self.assertEqual(len(curta.splitlines()), 1)
+
+    def test_status_yaml_invalido_vira_pendencia_sem_traceback(self):
+        self.instalar()
+        (self.projeto / ".kit-ia/projeto.yaml").write_text("nome: antes: depois", encoding="utf-8")
+        codigo, saida, erro = rodar("status", "--detalhes")
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("linha 1:", saida)
+        self.assertNotIn("Traceback", erro)
+
+    def test_status_sem_registro_inspeciona_projeto_sem_escrever(self):
+        self.instalar()
+        self.registro.unlink()
+        antes = self.snapshot()
+        codigo, saida, erro = rodar("status", str(self.projeto))
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("em dia", saida)
+        self.assertEqual(self.snapshot(), antes)
+
+    def test_atualizar_simular_nao_escreve_e_real_restaura_copias(self):
+        self.instalar()
+        copia = self.projeto / ".claude/skills/verificar/SKILL.md"
+        copia.write_text("edição manual", encoding="utf-8")
+        (self.projeto / ".kit-ia/VERSAO").write_text("0.1.2", encoding="utf-8")
+        antes = self.snapshot()
+        codigo, saida, erro = rodar("atualizar", "--simular")
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("Resumo da atualização [simulação]", saida)
+        self.assertEqual(self.snapshot(), antes)
+        codigo, saida, erro = rodar("atualizar")
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("2 mudança(s), 0 aviso(s)", saida)
+        self.assertEqual(copia.read_bytes(), (kit.PASTA_SKILLS / "verificar/SKILL.md").read_bytes())
+        _, saida, _ = rodar("status", "--detalhes")
+        self.assertIn("em dia", saida)
+        self.assertFalse((self.projeto / ".cursor").exists())
+
+    def test_atualizar_preserva_yaml_agents_claude_e_pastas_do_usuario(self):
+        self.instalar()
+        proprios = {"AGENTS.md": "regras locais", "CLAUDE.md": "instruções locais",
+                    ".kit-ia/projeto.yaml": "nome: próprio\n",
+                    ".claude/skills/verificar/SKILL.md": "skill própria"}
+        (self.projeto / ".claude/skills/verificar" / kit.MARCADOR).unlink()
+        for relativo, texto in proprios.items():
+            (self.projeto / relativo).write_text(texto, encoding="utf-8")
+        codigo, saida, erro = rodar("atualizar")
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("3 aviso(s)", saida)
+        for relativo, texto in proprios.items():
+            self.assertEqual((self.projeto / relativo).read_text(encoding="utf-8"), texto)
+        _, saida, _ = rodar("status", "--detalhes")
+        self.assertIn("chave ausente no projeto.yaml: branches", saida)
+        self.assertIn("pasta do usuário, mantida: .claude/skills/verificar", saida)
+
+    def test_pasta_inexistente_avisa_simulacao_preserva_e_real_remove(self):
+        self.instalar()
+        kit.shutil.rmtree(self.projeto)
+        antes = self.snapshot()
+        _, saida, _ = rodar("status")
+        self.assertIn("pasta inexistente", saida)
+        codigo, saida, erro = rodar("atualizar", "--simular")
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("seria removida do registro", saida)
+        self.assertEqual(self.snapshot(), antes)
+        codigo, saida, erro = rodar("atualizar")
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("removida do registro", saida)
+        self.assertEqual(self.registros(), {})
+
+    def test_atualizar_projeto_unico_nao_toca_outros_e_preserva_registro(self):
+        self.instalar()
+        outro = self.raiz / "outro"
+        outro.mkdir()
+        self.instalar(outro)
+        copia = outro / ".claude/skills/verificar/SKILL.md"
+        copia.write_text("edição em outro projeto", encoding="utf-8")
+        codigo, _, erro = rodar("atualizar", str(self.projeto))
+        self.assertEqual(codigo, 0, erro)
+        self.assertEqual(copia.read_text(encoding="utf-8"), "edição em outro projeto")
+        kit.shutil.rmtree(outro)
+        codigo, _, erro = rodar("atualizar")
+        self.assertEqual(codigo, 0, erro)
+        self.assertEqual(list(self.registros()), [str(self.projeto.resolve())])
+        self.assertEqual(self.registros()[str(self.projeto.resolve())]["versao"], kit.VERSAO)
+
+    def test_atualizar_nao_registrado_recusa_sem_escrever(self):
+        antes = self.snapshot()
+        codigo, _, erro = rodar("atualizar", str(self.projeto))
+        self.assertEqual(codigo, 1)
+        self.assertIn("não registrado", erro)
+        self.assertEqual(self.snapshot(), antes)
+
+    def test_atualizar_preserva_filtro_de_skills_e_sem_mcp(self):
+        self.instalar(None, "--skills", "verificar", "--sem-mcp")
+        codigo, _, erro = rodar("atualizar")
+        self.assertEqual(codigo, 0, erro)
+        self.assertFalse((self.projeto / ".claude/skills/planejar").exists())
+        self.assertFalse((self.projeto / ".mcp.json").exists())
+        _, saida, _ = rodar("status")
+        self.assertIn("em dia", saida)
+
+    def test_atualizar_continua_depois_de_erro_em_um_projeto(self):
+        self.instalar()
+        outro = self.raiz / "z-outro"
+        outro.mkdir()
+        self.instalar(outro)
+        (self.projeto / ".mcp.json").write_text("{", encoding="utf-8")
+        copia = outro / ".claude/skills/verificar/SKILL.md"
+        copia.write_text("editada", encoding="utf-8")
+        codigo, saida, _ = rodar("atualizar")
+        self.assertEqual(codigo, 1)
+        self.assertIn("não é um JSON válido", saida)
+        self.assertIn("Resumo da atualização", saida)
+        self.assertEqual(copia.read_bytes(), (kit.PASTA_SKILLS / "verificar/SKILL.md").read_bytes())
+
+    def test_atualizar_nao_executa_mcp_global(self):
+        codigo, _, erro = rodar("instalar", str(self.projeto), "--agentes", "codex")
+        self.assertEqual(codigo, 0, erro)
+        with unittest.mock.patch.object(kit.subprocess, "run") as executar, \
+                unittest.mock.patch("builtins.input") as perguntar:
+            codigo, _, erro = rodar("atualizar")
+        self.assertEqual(codigo, 0, erro)
+        executar.assert_not_called()
+        perguntar.assert_not_called()
+
+    def test_status_confere_claude_existente_mesmo_sem_agente_claude(self):
+        codigo, _, erro = rodar("instalar", str(self.projeto), "--agentes", "universal")
+        self.assertEqual(codigo, 0, erro)
+        (self.projeto / "CLAUDE.md").write_text("instruções próprias", encoding="utf-8")
+        codigo, saida, erro = rodar("status", "--detalhes")
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("CLAUDE.md não importa", saida)
+
+    def test_erro_de_gravacao_do_registro_vira_erro_kit(self):
+        with unittest.mock.patch.object(Path, "replace", side_effect=PermissionError("acesso negado")):
+            codigo, _, erro = rodar("instalar", str(self.projeto), "--agentes", "universal")
+        self.assertEqual(codigo, 1)
+        self.assertIn("não consegui gravar", erro)
+        self.assertNotIn("Traceback", erro)
+
+    def test_registro_invalido_produz_erro_claro_sem_traceback(self):
+        self.registro.parent.mkdir()
+        for conteudo in ("{", "[]", '{"relativo": {}}'):
+            with self.subTest(conteudo=conteudo):
+                self.registro.write_text(conteudo, encoding="utf-8")
+                for comando in ("status", "atualizar"):
+                    codigo, _, erro = rodar(comando)
+                    self.assertEqual(codigo, 1)
+                    self.assertIn("erro:", erro)
+                    self.assertNotIn("Traceback", erro)
+
+    def test_sem_registrados_informa_em_ambos_comandos(self):
+        for comando in ("status", "atualizar"):
+            codigo, saida, erro = rodar(comando)
+            self.assertEqual(codigo, 0, erro)
+            self.assertIn("Nenhum projeto registrado", saida)
+        self.assertFalse(self.registro.exists())
 
 
 class NovaSkillTest(unittest.TestCase):

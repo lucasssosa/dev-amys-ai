@@ -68,6 +68,37 @@ Reinstalar (inclusive depois de atualizar o kit com `git pull`) é seguro:
 Projetos podem estar em qualquer provedor (GitHub, Azure DevOps, GitLab ou nenhum): isso é
 configurado em `hospedagem` no `projeto.yaml`. Modelos de CI em [modelos/ci/](modelos/ci/).
 
+## Atualizar
+
+Depois de baixar uma versão nova do kit, confira os projetos e atualize suas cópias:
+
+```bash
+git pull
+python kit.py status
+python kit.py status ../meu-projeto --detalhes
+python kit.py atualizar --simular
+python kit.py atualizar
+python kit.py atualizar ../meu-projeto       # atualiza apenas este projeto registrado
+```
+
+Cada instalação local registra o caminho absoluto, os agentes, a versão e a data em
+`~/.kit-ia/projetos.json` (ou `$KIT_IA_HOME/projetos.json`). Reinstalar atualiza a mesma
+entrada. Instalações com `--global` ou `--simular` não registram projetos.
+`status` resume cada projeto em uma linha; `--detalhes` lista cópias desatualizadas,
+chaves ausentes e pendências de `AGENTS.md` e `CLAUDE.md`. Um caminho explícito também
+pode ser inspecionado antes de ser registrado.
+
+`atualizar` reinstala somente nos projetos registrados, com os agentes e as opções
+`--skills` e `--sem-mcp` da instalação mais recente. Preserva os arquivos do usuário
+pelas mesmas regras de `instalar`, sem `--forcar` e sem executar comandos globais de MCP.
+Pastas que não existem mais saem do registro com aviso; `--simular` apenas mostra essa
+remoção e as mudanças previstas, sem gravar arquivos nem alterar o registro.
+
+Chaves novas do `projeto.yaml` **não são inseridas automaticamente**: o `status` aponta
+as que faltam no primeiro e no segundo nível. Complete-as à mão usando
+[templates/projeto.yaml](templates/projeto.yaml) como referência. Essas pendências e
+as de instruções próprias continuam visíveis depois da atualização até serem resolvidas.
+
 ## Skills incluídas
 
 | Skill | Quando usar |
