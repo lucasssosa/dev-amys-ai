@@ -21,7 +21,9 @@ Objetivo: encontrar o que vai dar errado em produção antes que chegue lá. Cad
 2. **Segurança.** Segredo no código; injeção (SQL, comando, caminho de arquivo, prompt);
    entrada não validada na porta de entrada; falta de autorização; dado sensível em log.
 3. **Coisas inventadas.** Função, opção ou biblioteca que não existe na versão usada.
-   Em caso de dúvida, confira na documentação e marque como "a confirmar".
+   Confira no Context7 (ou outro MCP de documentação) as APIs da versão usada. Sem esse MCP,
+   leia a documentação ou o código da versão instalada. Nunca valide de memória; se não
+   conseguir conferir, marque como "a confirmar".
 4. **Testes.** Regra nova sem teste; teste que só testa o mock; falta de caso de erro ou de limite;
    asserção fraca (só "não lançou exceção").
 5. **Escopo.** Mudanças que não têm relação com o pedido (refatoração de carona, formatação em massa).

@@ -8,7 +8,7 @@ para que o coordenador leia pouco e decida bem.
 | Papel | Faz | Não faz |
 |---|---|---|
 | **Coordenador** (sessão principal) | Entende o pedido, registra, planeja, escreve a task, despacha, lê o diff, relata | Código de feature, nem "só uma linha"; ler log bruto ou imagem |
-| **Executor** | Uma task por vez, na worktree dela: edição pontual, gate 1, commit | Decidir escopo, consertar código alheio, push, mexer em outra worktree |
+| **Executor** | Uma task por vez, na worktree dela: lê os padrões listados na task antes de editar, consulta APIs externas no Context7 (ou outro MCP de documentação; sem ele, documentação ou código da versão instalada), faz edição pontual, gate 1 e commit | Decidir escopo, consertar código alheio, push, mexer em outra worktree |
 | **Integrador-arquiteto** | Junta tasks entregues na release, uma por vez; confere se o código respeita a arquitetura do projeto; resolve conflito mecânico; roda o gate 2 | Resolver conflito semântico; reescrever a task |
 | **Revisor** | Mede e relata em tasks de risco | Escrever ou corrigir código |
 | **Leitor** | Lê logs, capturas de tela ou muitos arquivos e devolve resumo de até 1 KB | Decidir |
@@ -20,7 +20,11 @@ Os contratos completos de cada papel ainda não foram implementados; valem as re
 ## Despacho
 
 - **Prompt enxuto.** "Execute a task `<ID>`. Task: `<caminho da task>`. Siga
-  `.kit-ia/processo/02-papeis-e-despacho.md` (papel executor)." Acrescente só o que for
+  `.kit-ia/processo/02-papeis-e-despacho.md` (papel executor). Leia os padrões listados na task
+  antes de editar. Para APIs externas, consulte a documentação da versão usada pelo Context7
+  (ou outro MCP de documentação); sem ele, leia a documentação ou o código da versão instalada.
+  Nunca escreva de memória. A task aprovada ou devolvida pelo revisor é o plano aprovado:
+  execute sem pedir nova aprovação." Acrescente só o que for
   específico deste despacho. A task é autossuficiente; não repita o contexto no prompt.
 - **Retorno do executor (até 2 KB), nesta ordem:** revisão da task que leu, hash do commit,
   evidência do gate 1, validação simulada ou real, limitações, achados que pedem decisão.

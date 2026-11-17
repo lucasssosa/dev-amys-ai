@@ -13,8 +13,10 @@ A raiz comum dos erros é **tratar amostra como medição**.
 
 ## Inventar
 
-- **API inventada:** função ou opção que não existe na versão usada. Confira na documentação
-  atual (Context7) ou no código da dependência.
+- **API inventada:** função ou opção que não existe na versão usada. Siga a regra
+  "Documentação atual antes de API externa" do [núcleo](00-nucleo.md): consulte o Context7
+  (ou outro MCP de documentação); sem ele, leia a documentação ou o código da versão instalada.
+  Nunca escreva de memória.
 - **Dependência inventada:** pacote com nome plausível que não existe, ou que é malicioso.
   Confira no registro oficial (Maven Central, npm, PyPI) antes de adicionar.
 - **Comando inventado:** use os `comandos` do `projeto.yaml`; se faltar, pergunte.

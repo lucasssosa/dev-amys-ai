@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.3.1] - 2026-11-17
+
+### Adicionado
+
+- Processo e skills orientam consultar APIs externas na documentação da versão usada pelo
+  Context7 ou outro MCP de documentação; sem ele, na documentação ou no código instalado.
+- Tasks incluem o campo obrigatório "Padrões a seguir", preenchido pelo coordenador conforme
+  as áreas do projeto e o tipo da task e lido pelo executor antes de editar.
+- `install` destaca o Context7 como recomendado e mostra o comando opcional do Claude Code
+  com escopo de usuário, sem executá-lo. MCP global de Codex e Antigravity mantém a confirmação.
+
+### Corrigido
+
+- Executor despachado com task aprovada ou devolvida pelo revisor executa sem pedir nova
+  aprovação: a task é o plano aprovado.
+
 ## [0.3.0] - 2026-11-17
 
 ### Alterado

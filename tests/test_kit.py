@@ -476,6 +476,56 @@ class InstalarTest(unittest.TestCase):
         self.assertEqual(codigo, 0)
         self.assertIn("0 mudança(s)", saida)
 
+    def test_context7_recomendado_com_comando_do_agente(self):
+        comandos = {
+            "claude": "claude mcp add --transport http --scope user context7 https://mcp.context7.com/mcp",
+            "codex": "codex mcp add context7 --url https://mcp.context7.com/mcp",
+            "antigravity": "agy mcp add context7 https://mcp.context7.com/mcp",
+        }
+        for agente, comando in comandos.items():
+            for opcoes in ([], ["--dry-run"]):
+                with self.subTest(agente=agente, opcoes=opcoes):
+                    codigo, saida, erro = rodar("install", str(self.projeto), "--agents", agente, *opcoes)
+                    self.assertEqual(codigo, 0, erro)
+                    self.assertIn("MCP global (rode uma vez):", saida)
+                    self.assertIn("Context7 (recomendado: documentação atual das bibliotecas)", saida)
+                    self.assertIn(comando, saida)
+                    for outro, comando_alheio in comandos.items():
+                        if outro != agente:
+                            self.assertNotIn(comando_alheio, saida)
+        self.executar.assert_not_called()
+        self.perguntar.assert_not_called()
+
+    def test_claude_global_apenas_orienta_mesmo_com_flag(self):
+        self.perguntar.return_value = "s"
+        codigo, saida, erro = rodar("install", str(self.projeto), "--agents", "claude", "--mcp-global")
+        self.assertEqual(codigo, 0, erro)
+        self.assertIn("opcional, copie e rode", saida)
+        self.assertIn("claude mcp add --transport http --scope user context7", saida)
+        self.assertEqual(self.ler_json(".mcp.json")["mcpServers"]["context7"],
+                         {"type": "http", "url": "https://mcp.context7.com/mcp"})
+        self.executar.assert_not_called()
+        self.perguntar.assert_not_called()
+
+    def test_orientacao_context7_respeita_configuracao(self):
+        for servidor in (None, {"tipo": "http", "url": "https://documentacao.exemplo/mcp"},
+                         {"tipo": "stdio", "comando": "documentacao"}):
+            with self.subTest(servidor=servidor):
+                servidores = {"context7": servidor} if servidor else {}
+                with unittest.mock.patch.object(kit, "carregar_servidores", return_value=servidores):
+                    codigo, saida, erro = rodar("install", str(self.projeto), "--agents", "claude", "--dry-run")
+                self.assertEqual(codigo, 0, erro)
+                if servidor:
+                    self.assertIn("Context7 (recomendado:", saida)
+                else:
+                    self.assertNotIn("Context7", saida)
+                if servidor and servidor["tipo"] == "http":
+                    self.assertIn("claude mcp add --transport http --scope user context7 " + servidor["url"], saida)
+                else:
+                    self.assertNotIn("claude mcp add", saida)
+        self.executar.assert_not_called()
+        self.perguntar.assert_not_called()
+
     def test_simular_nao_escreve(self):
         codigo, saida, _ = rodar("install", str(self.projeto), "--dry-run")
         self.assertEqual(codigo, 0)
@@ -625,6 +675,8 @@ class InstalarTest(unittest.TestCase):
     def test_sem_mcp_omite_comandos_e_confirmacao(self):
         _, saida, _ = rodar("install", str(self.projeto), "--mcp-global", "--no-mcp")
         self.assertNotIn("mcp add", saida)
+        self.assertNotIn("Context7", saida)
+        self.assertNotIn("MCP global", saida)
         self.perguntar.assert_not_called()
         self.executar.assert_not_called()
 
@@ -1379,7 +1431,7 @@ class InterfaceInglesTest(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as saida, self.assertRaises(SystemExit) as erro:
             kit.montar_parser().parse_args(["--version"])
         self.assertEqual(erro.exception.code, 0)
-        self.assertIn("0.3.0", saida.getvalue())
+        self.assertEqual(saida.getvalue(), f"dev-amys-ai {kit.VERSAO}\n")
 
 
 class NovaSkillTest(unittest.TestCase):

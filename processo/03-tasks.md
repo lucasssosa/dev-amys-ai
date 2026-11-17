@@ -22,6 +22,7 @@ Modelo pronto: [../modelos/tarefa.md](../modelos/tarefa.md). Tamanho alvo: 3 a 5
 | Entregável para o usuário | Sim | O que ele vai ver ou poder fazer. Sem isto, a task não é despachada |
 | O que esta task não faz | Sim | Fecha o escopo |
 | Arquivos que esta task possui | Sim | Define o paralelismo e o que o commit pode conter |
+| Padrões a seguir | Sim | Lista de `.kit-ia/padroes/<área>.md` que o executor lê antes de editar |
 | Pode rodar em paralelo com | Sim | IDs ou "nenhuma" |
 | Critérios de aceite | Sim | Asserções verificáveis, não desejos |
 | Prova de vida | Sim | O comando ou a chamada que mostra funcionando |
@@ -38,6 +39,9 @@ Tipos de task: os mesmos nomes de `gates.por_tipo` do `projeto.yaml` (ex.: `back
 - Critério de aceite com contagem diz também o que precisa sobreviver:
   "zero `console.log`, **e** nenhum teste removido".
 - Não reabra decisão que o usuário já fechou; cite-a.
+- O coordenador preenche **Padrões a seguir** a partir de `projeto.areas` no `projeto.yaml`
+  e do tipo da task, consultando o índice dos padrões. Liste os arquivos aplicáveis; se não
+  houver nenhum, escreva "nenhum" com o motivo. O executor lê a lista antes de editar.
 - Task alterada depois de despachada sobe o selo: `Revisão 2 — <data hora>`.
 
 ## Onde as tasks ficam

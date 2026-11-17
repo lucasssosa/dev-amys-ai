@@ -18,6 +18,11 @@
 ## Arquivos que esta task possui
 - `<caminho/arquivo>`
 
+## Padrões a seguir
+<Obrigatório: o coordenador lista os padrões aplicáveis conforme projeto.areas e o tipo da task;
+o executor lê antes de editar. Se não houver, escreva "nenhum" com o motivo.>
+- `.kit-ia/padroes/<área>.md`
+
 ## Pode rodar em paralelo com
 <IDs, ou "nenhuma">
 
