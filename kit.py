@@ -28,6 +28,7 @@ import os
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -531,8 +532,24 @@ def caminho_sem_desvios(caminho: Path, limite: Path) -> bool:
     """Não siga links ou junções: um marcador fora do destino não autoriza remoção."""
     if caminho == limite or not caminho.is_relative_to(limite):
         return False
-    return all(not parte.is_symlink() and not getattr(os.path, "isjunction", lambda p: False)(parte)
-               for parte in (caminho, *caminho.parents))
+    try:
+        for parte in (caminho, *caminho.parents):
+            if parte.is_symlink():
+                return False
+            try:
+                atributos = parte.lstat()
+            except FileNotFoundError:
+                continue
+            # isjunction só existe desde 3.12; lstat expõe reparse points também
+            # no Windows com Python 3.10/3.11, sem seguir a junção.
+            if getattr(atributos, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                return False
+        fisico = caminho.resolve()
+        raiz_fisica = limite.resolve()
+        return fisico != raiz_fisica and fisico.is_relative_to(raiz_fisica)
+    except (OSError, RuntimeError, ValueError):
+        # Sem comprovar o destino físico, a remoção não está autorizada.
+        return False
 
 
 def planejar_remocao_mcp(ex: Execucao, caminho: Path, formato: str, servidores: dict,
@@ -702,7 +719,8 @@ def desinstalar(args) -> int:
             else:
                 caminho.unlink()
         for pai in sorted(vazios, key=lambda p: len(p.parts), reverse=True):
-            if pai.is_dir() and not any(pai.iterdir()):
+            limite = base if base else next(d.parent for d in destinos if pai == d or pai.is_relative_to(d))
+            if seguro(pai, limite) and pai.is_dir() and not any(pai.iterdir()):
                 pai.rmdir()
         if registrado:
             with bloquear_projetos():
@@ -1145,7 +1163,16 @@ def ler_projeto(caminho: Path) -> dict:
         raise ErroKit(f"não consegui ler projeto.yaml: {erro}") from erro
 
 
+def pasta_do_projeto(caminho: str) -> Path:
+    projeto = Path(caminho).resolve()
+    pasta = projeto if projeto.is_dir() else projeto.parent
+    return pasta.parent if pasta.name == PASTA_NO_PROJETO else pasta
+
+
 def cmd_custo(args) -> int:
+    if (args.projeto and args.verificar_orcamento
+            and pasta_do_projeto(args.projeto) != pasta_do_projeto(args.verificar_orcamento)):
+        raise ErroKit("--project e --check-budget devem indicar o mesmo projeto")
     desde = custo.data(args.desde) if args.desde else None
     if args.desde and desde is None:
         raise ErroKit("--since deve ser uma data ISO, por exemplo 2026-11-16")
@@ -1187,10 +1214,7 @@ def cmd_custo(args) -> int:
         if not isinstance(limites, dict) or any(custo.numero(limites.get(campo)) is None for campo in ("tokens", "minutos")):
             raise ErroKit("orcamento.por_task precisa de tokens e minutos numéricos não negativos")
     if args.projeto or args.verificar_orcamento:
-        projeto = Path(args.projeto or args.verificar_orcamento).resolve()
-        raiz_projeto = projeto if projeto.is_dir() else projeto.parent
-        if raiz_projeto.name == PASTA_NO_PROJETO:
-            raiz_projeto = raiz_projeto.parent
+        raiz_projeto = pasta_do_projeto(args.projeto or args.verificar_orcamento)
         raizes = custo.raizes_projeto(raiz_projeto)
         def do_projeto(item):
             if not item["pasta"]:

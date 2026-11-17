@@ -53,6 +53,13 @@ As opções abaixo recebem o prefixo `--` em ambos os nomes:
 - `cost --until`, `--project` e `--by day`: filtros de intervalo e projeto e agrupamento
   pelo dia UTC de início da sessão, mantendo o consumo completo medido.
 
+### Corrigido
+
+- `uninstall` bloqueia reparse points também no Python 3.10/3.11 e confere se o
+  destino físico permanece dentro da pasta autorizada antes de remover arquivos.
+- `cost` rejeita projetos divergentes entre `--project` e `--check-budget`, impedindo
+  que o filtro oculte o consumo do projeto cujo orçamento está sendo verificado.
+
 ## [0.2.0] - 2026-11-17
 
 - Instalações concorrentes preservam todas as entradas do registro; a remoção de pastas

@@ -18,7 +18,7 @@ dev-amys-ai (este repositório)                 seu projeto
                      python kit.py run ───> qualquer modelo por API
 ```
 
-Versão atual: **0.2.0** ([CHANGELOG.md](CHANGELOG.md)).
+Versão atual: **0.3.0** ([CHANGELOG.md](CHANGELOG.md)).
 
 ## As peças
 

@@ -43,6 +43,32 @@ def registrar_em_processo(base, perfil, iniciado, lido, continuar):
 
 
 class CustoTest(unittest.TestCase):
+    def test_orcamento_recusa_filtro_de_outro_projeto_sem_ocultar_estouro(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            raiz = Path(temporaria)
+            projeto = raiz / "projeto-a"
+            outro = raiz / "projeto-b"
+            projeto.mkdir()
+            outro.mkdir()
+            configuracao = projeto / ".kit-ia/projeto.yaml"
+            configuracao.parent.mkdir()
+            configuracao.write_text("orcamento: {por_task: {tokens: 100, minutos: 30}}", encoding="utf-8")
+            inicio = kit.custo.data("2026-11-17")
+            registro = kit.custo.registro("codex", "modelo", "executor", str(projeto), "BL-LU-5",
+                                          inicio, inicio, {"entrada": 1000, "saida": 0})
+            with unittest.mock.patch.object(kit.custo, "coletar", return_value=([registro], [])):
+                for filtro in (None, projeto, configuracao, outro):
+                    with self.subTest(filtro=filtro):
+                        opcoes = ["--project", str(filtro)] if filtro else []
+                        codigo, saida, erro = rodar("cost", "--check-budget", str(configuracao),
+                                                  *opcoes, "--json")
+                        self.assertEqual(codigo, 1)
+                        if filtro == outro:
+                            self.assertIn("--project e --check-budget devem indicar o mesmo projeto", erro)
+                        else:
+                            self.assertEqual(json.loads(saida)["grupos"][0]["tokens"], 1000)
+                            self.assertTrue(json.loads(saida)["estouros"])
+
     def test_alias_cost_check_budget_recusa_medicao_incompleta(self):
         with tempfile.TemporaryDirectory() as temporaria:
             raiz = Path(temporaria)
@@ -1191,6 +1217,50 @@ class DesinstalarTest(unittest.TestCase):
         self.assertFalse(kit.caminho_sem_desvios(self.raiz / "fora", self.projeto))
         self.assertFalse(kit.caminho_sem_desvios(self.projeto, self.projeto))
 
+    def test_reparse_point_preserva_skills_mesmo_sem_isjunction(self):
+        marcador = self.escrever(".agents/skills/externa/.kit-ia", "kit")
+        skill = self.escrever(".agents/skills/externa/SKILL.md", "conteúdo externo")
+        antes = self.snapshot()
+        lstat = Path.lstat
+        for desvio in (self.projeto / ".agents", skill.parent):
+            with self.subTest(desvio=desvio):
+                def atributos(caminho):
+                    if caminho == desvio:
+                        return unittest.mock.Mock(st_file_attributes=1024, st_mode=lstat(caminho).st_mode)
+                    return lstat(caminho)
+
+                sem_api = (unittest.mock.patch.object(os.path, "isjunction")
+                           if hasattr(os.path, "isjunction") else contextlib.nullcontext())
+                with sem_api, unittest.mock.patch.object(Path, "lstat", atributos):
+                    if hasattr(os.path, "isjunction"):
+                        del os.path.isjunction
+                    saida = self.desinstalar("--agents", "universal", "--yes")
+                self.assertEqual(self.snapshot(), antes)
+                self.assertEqual(skill.read_text(encoding="utf-8"), "conteúdo externo")
+                self.assertTrue(marcador.is_file())
+                self.assertIn("caminho com link, junção ou fora do destino; mantido", saida)
+
+    def test_destino_fisico_fora_do_projeto_nao_autoriza_remocao(self):
+        caminho = self.projeto / ".agents/skills"
+        caminho.mkdir(parents=True)
+        resolver = Path.resolve
+
+        def destino_fisico(parte, *args, **kwargs):
+            if parte == caminho:
+                return self.raiz / "externa/skills"
+            return resolver(parte, *args, **kwargs)
+
+        with unittest.mock.patch.object(Path, "resolve", destino_fisico):
+            self.assertFalse(kit.caminho_sem_desvios(caminho, self.projeto))
+
+    def test_sem_comprovar_caminho_fisico_nao_autoriza_remocao(self):
+        caminho = self.projeto / ".agents/skills"
+        caminho.mkdir(parents=True)
+        for metodo in ("lstat", "resolve"):
+            with self.subTest(metodo=metodo), \
+                 unittest.mock.patch.object(Path, metodo, side_effect=PermissionError("sem acesso")):
+                self.assertFalse(kit.caminho_sem_desvios(caminho, self.projeto))
+
     def test_argumentos_invalidos_tem_erro_claro(self):
         for argumentos in ((), (str(self.projeto / "ausente"),), (str(self.projeto), "--global"),
                            (str(self.projeto), "--agents", "ausente")):
@@ -1208,6 +1278,10 @@ class DesinstalarTest(unittest.TestCase):
 
 
 class InterfaceInglesTest(unittest.TestCase):
+    def test_readme_informa_a_versao_atual_da_cli(self):
+        readme = (kit.RAIZ / "README.md").read_text(encoding="utf-8")
+        self.assertIn(f"Versão atual: **{kit.VERSAO}**", readme)
+
     def test_comandos_antigos_nao_tem_alias(self):
         for comando in ("listar", "validar", "instalar", "nova-skill", "executar", "custo", "atualizar"):
             with self.subTest(comando=comando), contextlib.redirect_stderr(io.StringIO()):
