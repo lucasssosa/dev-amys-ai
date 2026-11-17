@@ -46,11 +46,16 @@ def uso_resposta(resposta: dict, protocolo: str) -> dict:
     uso = resposta.get("usage") or {}
     if not isinstance(uso, dict):
         uso = {}
+    extras = {}
     if protocolo == "anthropic":
         entrada, saida = uso.get("input_tokens"), uso.get("output_tokens")
         leitura, escrita = uso.get("cache_read_input_tokens", 0), uso.get("cache_creation_input_tokens", 0)
-        if numero(entrada) is not None:
-            entrada += (numero(leitura) or 0) + (numero(escrita) or 0)
+        if any(numero(valor) is None for valor in (entrada, saida, leitura, escrita)):
+            extras = {"parcial": True, "custo_confiavel": False}
+        cache = (numero(leitura) or 0) + (numero(escrita) or 0)
+        # Cache conhecido comprova entrada mínima mesmo sem o contador de entrada sem cache.
+        if numero(entrada) is not None or cache:
+            entrada = (numero(entrada) or 0) + cache
     else:
         entrada = uso.get("prompt_tokens", resposta.get("prompt_eval_count"))
         saida = uso.get("completion_tokens", resposta.get("eval_count"))
@@ -61,7 +66,7 @@ def uso_resposta(resposta: dict, protocolo: str) -> dict:
         escrita = 0
     return {"entrada": numero(entrada), "saida": numero(saida),
             "cache_leitura": numero(leitura), "cache_escrita": numero(escrita),
-            "custo_usd": numero(uso.get("cost"))}
+            "custo_usd": numero(uso.get("cost")), **extras}
 
 
 def url_publica(url: str) -> str:
@@ -101,7 +106,8 @@ def registro(agente, modelo, papel, pasta, branch, inicio, fim, uso, **extras):
             "pasta": pasta, "task": detectar_task(branch, pasta), "inicio": inicio,
             "fim": fim, "entrada": uso.get("entrada"), "saida": uso.get("saida"),
             "cache_leitura": uso.get("cache_leitura", 0), "cache_escrita": uso.get("cache_escrita", 0),
-            "custo_usd": uso.get("custo_usd"), **extras}
+            "custo_usd": uso.get("custo_usd"),
+            **{chave: uso[chave] for chave in ("parcial", "custo_confiavel") if chave in uso}, **extras}
 
 
 def ler_claude(pasta: Path, avisos: list) -> list:
@@ -134,38 +140,41 @@ def ler_claude(pasta: Path, avisos: list) -> list:
             identificador = linha.get("requestId") or mensagem.get("id")
             uso = mensagem["usage"]
             if identificador and identificador in respostas:
-                grupo, instante_uso, _ = respostas[identificador]
-                # Cópias antigas em outros arquivos não podem apagar a atualização de uso.
-                if instante is None or instante_uso is None or instante >= instante_uso:
-                    respostas[identificador] = (grupo, instante, uso)
-                continue
-            papel = "subagente" if linha.get("isSidechain") or "subagents" in arquivo.parts else "principal"
-            local, branch = linha.get("cwd", ""), linha.get("gitBranch", "")
-            chave = (mensagem.get("model"), papel, local, branch)
-            if chave not in grupos:
-                grupos[chave] = registro("claude", chave[0], papel, local, branch, None, None,
-                                        {"entrada": 0, "saida": 0}, minutos=0)
-            grupo = grupos[chave]
-            atual = chave
-            grupo["minutos"] += pendentes
-            pendentes = 0
-            # Somar só após consolidar evita contar tanto a parcial quanto a resposta final.
-            # Sem identificador, não há evidência de duplicação: cada linha conta separadamente.
-            respostas[identificador or object()] = (grupo, instante, uso)
+                grupo, consolidado, instantes = respostas[identificador]
+            else:
+                papel = "subagente" if linha.get("isSidechain") or "subagents" in arquivo.parts else "principal"
+                local, branch = linha.get("cwd", ""), linha.get("gitBranch", "")
+                chave = (mensagem.get("model"), papel, local, branch)
+                if chave not in grupos:
+                    grupos[chave] = registro("claude", chave[0], papel, local, branch, None, None,
+                                            {"entrada": 0, "saida": 0}, minutos=0)
+                grupo = grupos[chave]
+                atual = chave
+                grupo["minutos"] += pendentes
+                pendentes = 0
+                consolidado, instantes = {}, {}
+                # Sem identificador, não há evidência de duplicação: cada linha conta separadamente.
+                respostas[identificador or object()] = (grupo, consolidado, instantes)
+            for campo in ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                          "cache_creation_input_tokens"):
+                valor = numero(uso.get(campo, 0))
+                if valor is None:
+                    grupo["parcial"] = True
+                    grupo["custo_confiavel"] = False
+                elif (campo not in consolidado or instante is None or instantes[campo] is None
+                      or instante >= instantes[campo]):
+                    # O horário por contador permite preencher lacunas com cópias fora de ordem,
+                    # sem que um null posterior apague consumo nem uma cópia antiga o substitua.
+                    consolidado[campo], instantes[campo] = valor, instante
         for grupo in grupos.values():
             grupo["inicio"], grupo["fim"] = primeira, ultima
         registros.extend(grupos.values())
-    for grupo, _, uso in respostas.values():
+    # Somar só após consolidar evita contar tanto a parcial quanto a resposta final.
+    for grupo, uso, _ in respostas.values():
         for destino, origem in (("entrada", "input_tokens"), ("saida", "output_tokens"),
                                 ("cache_leitura", "cache_read_input_tokens"),
                                 ("cache_escrita", "cache_creation_input_tokens")):
-            valor = numero(uso.get(origem, 0))
-            if valor is None:
-                # Um contador desconhecido não apaga o consumo comprovado de outras respostas.
-                grupo["parcial"] = True
-                grupo["custo_confiavel"] = False
-            else:
-                grupo[destino] += valor
+            grupo[destino] += uso.get(origem, 0)
     for grupo in registros:
         # O Claude informa entrada sem cache; normalizamos para o total de entrada.
         if grupo["entrada"] is not None:
@@ -303,7 +312,8 @@ def ler_kit(pasta: Path, avisos: list) -> list:
         fim = inicio + timedelta(seconds=duracao) if inicio else None
         item = registro("kit", linha.get("modelo"), "executar", linha.get("pasta", ""), "", inicio, fim,
                         {chave: numero(linha.get(chave)) for chave in
-                         ("entrada", "saida", "cache_leitura", "cache_escrita", "custo_usd")})
+                         ("entrada", "saida", "cache_leitura", "cache_escrita", "custo_usd")},
+                        parcial=linha.get("parcial", False), custo_confiavel=linha.get("custo_confiavel", True))
         item["task"] = linha.get("task") or item["task"]
         item["minutos"] = duracao / 60
         registros.append(item)

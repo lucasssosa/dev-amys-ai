@@ -26,6 +26,10 @@
   sem somar parciais repetidas nem ocultar excesso de orçamento.
 - Respostas Claude com contadores desconhecidos preservam os subtotais comprovados de
   entrada, saída e cache, com medição parcial e custo desconhecido, sem ocultar orçamento excedido.
+- Atualizações parciais da mesma resposta Claude preservam o último valor conhecido de cada
+  contador; cópias fora de ordem não apagam consumo comprovado nem duplicam tokens.
+- Entrada Anthropic desconhecida mantém cache conhecido no total mínimo de tokens;
+  a indicação de medição parcial e custo desconhecido acompanha o registro e o orçamento.
 
 ## [0.1.2] - 2026-11-17
 

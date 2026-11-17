@@ -125,6 +125,49 @@ class MedicaoTest(unittest.TestCase):
                     self.assertTrue(grupo["parcial"])
                     self.assertIsNone(grupo["custo_usd"])
 
+    def test_claude_atualizacao_desconhecida_preserva_cada_contador_da_resposta(self):
+        completo = {"input_tokens": 500000, "output_tokens": 10,
+                    "cache_read_input_tokens": 20, "cache_creation_input_tokens": 30}
+        tarifas = {"modelo": dict.fromkeys(("entrada", "saida", "cache_leitura", "cache_escrita"), 1)}
+        for identificador in ("requestId", "message.id"):
+            for campo in completo:
+                for ordem in ((0, 1, 2), (2, 0, 1), (0, 2, 1)):
+                    with self.subTest(identificador=identificador, campo=campo, ordem=ordem):
+                        usos = [completo, {**completo, "output_tokens": 11},
+                                {**completo, "output_tokens": 12, campo: None}]
+                        linhas = [{"timestamp": f"2026-11-16T10:0{indice}:00Z", "message": {
+                            "id": "m1", "model": "modelo", "usage": usos[indice]}} for indice in ordem]
+                        if identificador == "requestId":
+                            for linha in linhas:
+                                linha["requestId"] = "r1"
+                        self.gravar("claude/a.jsonl", linhas)
+                        registros, avisos = custo.coletar()
+                        self.assertFalse(avisos)
+                        self.assertEqual(len(registros), 1)
+                        grupo = custo.agrupar(registros, "task", tarifas)[0]
+                        saida = 11 if campo == "output_tokens" else 12
+                        self.assertEqual((grupo["entrada"], grupo["saida"], grupo["cache_leitura"],
+                                          grupo["cache_escrita"], grupo["tokens"]),
+                                         (500050, saida, 20, 30, 500050 + saida))
+                        self.assertEqual(grupo["minutos"], 2)
+                        self.assertTrue(grupo["parcial"])
+                        self.assertIsNone(grupo["custo_usd"])
+
+    def test_anthropic_entrada_desconhecida_preserva_cache_como_limite_inferior(self):
+        for leitura, escrita in ((500000, 0), (0, 500000), (300000, 200000)):
+            with self.subTest(leitura=leitura, escrita=escrita):
+                uso = custo.uso_resposta({"usage": {"input_tokens": None, "output_tokens": 1,
+                    "cache_read_input_tokens": leitura, "cache_creation_input_tokens": escrita}}, "anthropic")
+                self.assertEqual(uso["entrada"], 500000)
+                item = custo.registro("kit", "modelo", "executar", str(self.raiz), "task/BL-LU-3",
+                                      None, None, uso)
+                grupo = custo.agrupar([item], "task", {"modelo": {
+                    "entrada": 1, "saida": 1, "cache_leitura": 1, "cache_escrita": 1}})[0]
+                self.assertEqual((grupo["tokens"], grupo["cache_leitura"], grupo["cache_escrita"]),
+                                 (500001, leitura, escrita))
+                self.assertTrue(grupo["parcial"])
+                self.assertIsNone(grupo["custo_usd"])
+
     def codex(self):
         return self.gravar("codex/2026/a.jsonl", [
             {"type": "session_meta", "timestamp": "2026-11-16T10:00:00Z", "payload": {
