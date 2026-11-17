@@ -24,6 +24,46 @@ def rodar(*argv: str) -> tuple[int, str, str]:
     return codigo, saida.getvalue(), erro.getvalue()
 
 
+class CustoTest(unittest.TestCase):
+    def test_desde_preserva_chamada_que_atravessa_data_e_estouro_do_orcamento(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            raiz = Path(temporaria)
+            projeto = raiz / ".kit-ia/projeto.yaml"
+            projeto.parent.mkdir()
+            projeto.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+            ambiente = {"KIT_IA_HOME": str(raiz),
+                        "KIT_IA_CLAUDE_DIR": str(raiz / "claude"),
+                        "KIT_IA_CODEX_DIR": str(raiz / "codex"),
+                        "KIT_IA_ANTIGRAVITY_DIR": str(raiz / "antigravity")}
+            with unittest.mock.patch.dict(os.environ, ambiente):
+                for duracao, desde, incluido in ((120, None, True), (120, "2026-11-17", True),
+                                                (60, "2026-11-17", True), (59, "2026-11-17", False),
+                                                (120, "2026-11-18", False)):
+                    with self.subTest(duracao=duracao, desde=desde):
+                        (raiz / "uso.jsonl").write_text(json.dumps({
+                            "data": "2026-11-16T23:59:00Z", "duracao_segundos": duracao,
+                            "modelo": "falso", "entrada": 500000, "saida": 0,
+                            "task": "BL-LU-3", "pasta": str(raiz)}) + "\n", encoding="utf-8")
+                        filtros = ["--desde", desde] if desde else []
+                        codigo, saida, erro = rodar("custo", *filtros, "--json")
+                        self.assertEqual(codigo, 0, erro)
+                        dados = json.loads(saida)
+                        if incluido:
+                            self.assertEqual(len(dados["grupos"]), 1)
+                            self.assertEqual(dados["grupos"][0]["tokens"], 500000)
+                            self.assertEqual(dados["grupos"][0]["minutos"], duracao / 60)
+                        else:
+                            self.assertEqual(dados["grupos"], [])
+                        codigo, saida, erro = rodar("custo", *filtros, "--verificar-orcamento",
+                                                   str(raiz), "--json")
+                        self.assertEqual(codigo, int(incluido), erro)
+                        orcamento = json.loads(saida)
+                        self.assertEqual(orcamento["grupos"], dados["grupos"])
+                        self.assertEqual(len(orcamento["estouros"]), int(incluido))
+                        if incluido:
+                            self.assertIn("BL-LU-3: tokens 500000.00 > 400000", orcamento["estouros"][0])
+
+
 class ProjetoYamlTest(unittest.TestCase):
     def test_orcamento_rejeita_yaml_invalido_sem_traceback(self):
         with tempfile.TemporaryDirectory() as temporaria:

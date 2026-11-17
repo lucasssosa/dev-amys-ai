@@ -242,6 +242,17 @@ class MedicaoTest(unittest.TestCase):
         grupo = custo.agrupar(registros, "agente", {})[0]
         self.assertEqual((grupo["tokens"], grupo["minutos"], grupo["custo_usd"]), (25, 1.5, .02))
 
+    def test_kit_fim_inclui_duracao_ao_atravessar_meia_noite(self):
+        self.gravar("kit/uso.jsonl", [{"data": "2026-11-16T23:59:00Z", "modelo": "m",
+                    "entrada": 500000, "saida": 0, "duracao_segundos": 120,
+                    "task": "BL-LU-3", "pasta": str(self.raiz)}])
+        registros, avisos = custo.coletar()
+        self.assertFalse(avisos)
+        self.assertEqual(len(registros), 1)
+        self.assertEqual(registros[0]["inicio"], custo.data("2026-11-16T23:59:00Z"))
+        self.assertEqual(registros[0]["fim"], custo.data("2026-11-17T00:01:00Z"))
+        self.assertEqual(registros[0]["minutos"], 2)
+
     def test_precos_diferenciam_cache_e_custo_do_provedor_tem_prioridade(self):
         item = {"modelo": "m", "entrada": 100, "saida": 10, "cache_leitura": 40, "cache_escrita": 20}
         tarifas = {"m": {"entrada": 2, "saida": 10, "cache_leitura": 1, "cache_escrita": 3}}

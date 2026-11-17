@@ -8,7 +8,7 @@ import re
 import sqlite3
 import subprocess
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -286,11 +286,14 @@ def ler_kit(pasta: Path, avisos: list) -> list:
     registros = []
     for linha in linhas_json(arquivo, avisos):
         inicio = data(linha.get("data"))
-        item = registro("kit", linha.get("modelo"), "executar", linha.get("pasta", ""), "", inicio, inicio,
+        duracao = numero(linha.get("duracao_segundos")) or 0
+        # O fim inclui a duração para que o filtro de data não oculte chamadas em andamento à meia-noite.
+        fim = inicio + timedelta(seconds=duracao) if inicio else None
+        item = registro("kit", linha.get("modelo"), "executar", linha.get("pasta", ""), "", inicio, fim,
                         {chave: numero(linha.get(chave)) for chave in
                          ("entrada", "saida", "cache_leitura", "cache_escrita", "custo_usd")})
         item["task"] = linha.get("task") or item["task"]
-        item["minutos"] = (numero(linha.get("duracao_segundos")) or 0) / 60
+        item["minutos"] = duracao / 60
         registros.append(item)
     return registros
 

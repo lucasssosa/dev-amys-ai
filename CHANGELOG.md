@@ -20,6 +20,8 @@
   evitando atribuir o uso de várias tasks à primeira delas.
 - O leitor YAML preserva espaços e dois-pontos nos valores e rejeita separadores estruturais
   em strings sem aspas com indicação da linha.
+- O filtro `custo --desde` considera o término das chamadas de `executar`, preservando
+  todo o consumo e o excesso de orçamento quando a duração atravessa a data do filtro.
 
 ## [0.1.2] - 2026-11-17
 
