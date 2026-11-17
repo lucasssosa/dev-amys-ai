@@ -25,6 +25,20 @@ def rodar(*argv: str) -> tuple[int, str, str]:
 
 
 class CustoTest(unittest.TestCase):
+    def test_alias_cost_check_budget_recusa_medicao_incompleta(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            raiz = Path(temporaria)
+            (raiz / "projeto.yaml").write_text("orcamento: {por_task: {tokens: 400000, minutos: 30}}", encoding="utf-8")
+            item = kit.custo.registro("codex", "modelo", "principal", str(raiz), "task/BL-LU-3",
+                kit.custo.data("2026-11-17"), kit.custo.data("2026-11-17"),
+                {"entrada": 1, "saida": 1}, medicao_incompleta=True)
+            with unittest.mock.patch("kit.custo.coletar", return_value=([item], [])):
+                codigo, saida, _ = rodar("cost", "--check-budget", str(raiz / "projeto.yaml"), "--json")
+            dados = json.loads(saida)
+            self.assertEqual(codigo, 1)
+            self.assertEqual(dados["estouros"], [])
+            self.assertEqual(dados["incompletas"], ["BL-LU-3: medição incompleta"])
+
     def test_claude_atualizacao_desconhecida_preserva_estouro_da_mesma_resposta(self):
         with tempfile.TemporaryDirectory() as temporaria:
             raiz = Path(temporaria)
@@ -657,6 +671,9 @@ class ProvedorFalso(BaseHTTPRequestHandler):
             campo = ("cache_read_input_tokens" if corpo["model"] == "cache-leitura-parcial"
                      else "cache_creation_input_tokens")
             resposta["usage"] = {"input_tokens": None, "output_tokens": 1, campo: 500000}
+        if corpo.get("model") == "openai-cache-parcial":
+            resposta["usage"] = {"prompt_tokens": None, "completion_tokens": 1,
+                                 "prompt_tokens_details": {"cached_tokens": 500000}}
         dados = json.dumps(resposta).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -669,6 +686,26 @@ class ProvedorFalso(BaseHTTPRequestHandler):
 
 
 class ExecutarTest(unittest.TestCase):
+    def test_openai_cache_com_entrada_nula_preserva_estouro_reportado(self):
+        raiz = Path(self.temporaria.name)
+        (raiz / "projeto.yaml").write_text("orcamento: {por_task: {tokens: 400000, minutos: 30}}", encoding="utf-8")
+        ambiente = {"KIT_IA_CLAUDE_DIR": str(raiz / "claude"), "KIT_IA_CODEX_DIR": str(raiz / "codex"),
+                    "KIT_IA_ANTIGRAVITY_DIR": str(raiz / "antigravity")}
+        with unittest.mock.patch.dict(os.environ, ambiente), unittest.mock.patch("kit.custo.Path.cwd", return_value=raiz):
+            codigo, _, erro = rodar("executar", "revisar", "--entrada", "pedido",
+                "--url", self.url, "--modelo", "openai-cache-parcial", "--protocolo", "openai", "--task", "BL-LU-3")
+            self.assertEqual(codigo, 0, erro)
+            uso = json.loads((raiz / "uso.jsonl").read_text(encoding="utf-8"))
+            self.assertEqual((uso["entrada"], uso["saida"]), (500000, 1))
+            self.assertTrue(uso["parcial"])
+            self.assertFalse(uso["custo_confiavel"])
+            codigo, saida, erro = rodar("cost", "--check-budget", str(raiz / "projeto.yaml"), "--json")
+        self.assertEqual(codigo, 1, erro)
+        grupo = json.loads(saida)["grupos"][0]
+        self.assertEqual(grupo["limite_superior_tokens"], 500001)
+        self.assertTrue(grupo["medicao_incompleta"])
+        self.assertIsNone(grupo["custo_usd"])
+
     def setUp(self):
         self.temporaria = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporaria.cleanup)

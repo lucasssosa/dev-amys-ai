@@ -64,6 +64,10 @@ def uso_resposta(resposta: dict, protocolo: str) -> dict:
             raise ValueError("telemetria inválida: prompt_tokens_details precisa ser um mapa")
         leitura = (detalhes or {}).get("cached_tokens", 0)
         escrita = 0
+        if numero(entrada) is None or numero(saida) is None or numero(leitura) is None:
+            extras = {"parcial": True, "custo_confiavel": False}
+        if numero(leitura) is not None:
+            entrada = max(numero(entrada) or 0, leitura) if numero(entrada) is not None or leitura else None
     return {"entrada": numero(entrada), "saida": numero(saida),
             "cache_leitura": numero(leitura), "cache_escrita": numero(escrita),
             "custo_usd": numero(uso.get("cost")), **extras}
@@ -95,10 +99,19 @@ def linhas_json(arquivo: Path, avisos: list):
                     registro = json.loads(linha)
                     if isinstance(registro, dict):
                         yield registro
+                    else:
+                        avisos.append(f"{arquivo.name}: registro JSON não é um mapa")
                 except ValueError:
                     avisos.append(f"{arquivo.name}: linha JSON inválida ignorada")
     except (OSError, UnicodeError):
         avisos.append(f"{arquivo.name}: leitura indisponível")
+
+
+def texto_metrica(valor, padrao, arquivo, avisos):
+    if isinstance(valor, str):
+        return valor
+    avisos.append(f"{arquivo.name}: contexto de medição inválido")
+    return padrao
 
 
 def registro(agente, modelo, papel, pasta, branch, inicio, fim, uso, **extras):
@@ -113,12 +126,16 @@ def registro(agente, modelo, papel, pasta, branch, inicio, fim, uso, **extras):
 def ler_claude(pasta: Path, avisos: list) -> list:
     registros, respostas = [], {}
     for arquivo in sorted(pasta.rglob("*.jsonl")):
+        inicio_avisos = len(avisos)
         grupos = {}
+        relacionados = {}
         primeira = ultima = None
         atual, anterior, pendentes = None, None, 0
         for linha in linhas_json(arquivo, avisos):
             # Distribuir os intervalos preserva a duração da sessão sem duplicá-la por modelo.
             instante = data(linha.get("timestamp"))
+            if "timestamp" in linha and instante is None:
+                avisos.append(f"{arquivo.name}: horário inválido")
             if instante:
                 if primeira and instante < primeira:
                     adiantamento = (primeira - instante).total_seconds() / 60
@@ -135,16 +152,26 @@ def ler_claude(pasta: Path, avisos: list) -> list:
                     grupos[atual]["minutos"] += intervalo
                 anterior = max(anterior or instante, instante)
             mensagem = linha.get("message") or {}
-            if not isinstance(mensagem, dict) or not mensagem.get("usage"):
+            if not isinstance(mensagem, dict):
+                avisos.append(f"{arquivo.name}: mensagem sem estrutura de medição verificável")
+                continue
+            if "usage" not in mensagem:
                 continue
             identificador = linha.get("requestId") or mensagem.get("id")
-            uso = mensagem["usage"]
+            if identificador is not None and not isinstance(identificador, str):
+                avisos.append(f"{arquivo.name}: identificador de resposta inválido")
+                identificador = None
+            uso = mensagem["usage"] if isinstance(mensagem["usage"], dict) else {}
             if identificador and identificador in respostas:
-                grupo, consolidado, instantes = respostas[identificador]
+                grupo, consolidado, instantes, maximos = respostas[identificador]
+                grupo["inicio"] = min(filter(None, (grupo["inicio"], primeira)), default=None)
+                grupo["fim"] = max(filter(None, (grupo["fim"], ultima)), default=None)
             else:
                 papel = "subagente" if linha.get("isSidechain") or "subagents" in arquivo.parts else "principal"
-                local, branch = linha.get("cwd", ""), linha.get("gitBranch", "")
-                chave = (mensagem.get("model"), papel, local, branch)
+                local = texto_metrica(linha.get("cwd", ""), "", arquivo, avisos)
+                branch = texto_metrica(linha.get("gitBranch", ""), "", arquivo, avisos)
+                modelo = texto_metrica(mensagem.get("model", ""), "", arquivo, avisos)
+                chave = (modelo, papel, local, branch)
                 if chave not in grupos:
                     grupos[chave] = registro("claude", chave[0], papel, local, branch, None, None,
                                             {"entrada": 0, "saida": 0}, minutos=0)
@@ -152,25 +179,42 @@ def ler_claude(pasta: Path, avisos: list) -> list:
                 atual = chave
                 grupo["minutos"] += pendentes
                 pendentes = 0
-                consolidado, instantes = {}, {}
+                consolidado, instantes, maximos = {}, {}, {}
                 # Sem identificador, não há evidência de duplicação: cada linha conta separadamente.
-                respostas[identificador or object()] = (grupo, consolidado, instantes)
+                respostas[identificador or object()] = (grupo, consolidado, instantes, maximos)
+            relacionados[id(grupo)] = grupo
+            if not identificador or instante is None:
+                grupo["medicao_incompleta"] = True
+            if instante is None:
+                grupo["janela_incerta"] = True
             for campo in ("input_tokens", "output_tokens", "cache_read_input_tokens",
                           "cache_creation_input_tokens"):
-                valor = numero(uso.get(campo, 0))
+                if campo not in uso and campo.startswith("cache_") and campo in consolidado:
+                    continue
+                valor = numero(uso.get(campo, 0 if campo.startswith("cache_") else None))
                 if valor is None:
                     grupo["parcial"] = True
                     grupo["custo_confiavel"] = False
-                elif (campo not in consolidado or instante is None or instantes[campo] is None
+                else:
+                    maximos[campo] = max(maximos.get(campo, 0), valor)
+                if valor is None:
+                    continue
+                if (campo not in consolidado or instante is None or instantes[campo] is None
                       or instante >= instantes[campo]):
                     # O horário por contador permite preencher lacunas com cópias fora de ordem,
                     # sem que um null posterior apague consumo nem uma cópia antiga o substitua.
                     consolidado[campo], instantes[campo] = valor, instante
-        for grupo in grupos.values():
-            grupo["inicio"], grupo["fim"] = primeira, ultima
+        for grupo in relacionados.values():
+            grupo["inicio"] = min(filter(None, (grupo["inicio"], primeira)), default=None)
+            grupo["fim"] = max(filter(None, (grupo["fim"], ultima)), default=None)
+            grupo.setdefault("sessoes_tempo", {})[str(arquivo)] = (
+                (ultima - primeira).total_seconds() / 60 if primeira and ultima else 0)
+        sinalizar_leitura(relacionados if relacionados else grupos, arquivo, avisos,
+                          inicio_avisos, "claude", primeira, ultima)
         registros.extend(grupos.values())
     # Somar só após consolidar evita contar tanto a parcial quanto a resposta final.
-    for grupo, uso, _ in respostas.values():
+    for grupo, uso, _, maximos in respostas.values():
+        grupo["limite_superior_tokens"] = grupo.get("limite_superior_tokens", 0) + sum(maximos.values())
         for destino, origem in (("entrada", "input_tokens"), ("saida", "output_tokens"),
                                 ("cache_leitura", "cache_read_input_tokens"),
                                 ("cache_escrita", "cache_creation_input_tokens")):
@@ -185,30 +229,51 @@ def ler_claude(pasta: Path, avisos: list) -> list:
 def ler_codex(pasta: Path, avisos: list) -> list:
     registros = []
     for arquivo in sorted(pasta.rglob("*.jsonl")):
+        inicio_avisos = len(avisos)
         primeira = ultima = None
         local = branch = modelo = ""
         papel, anterior, grupos = "principal", {}, {}
-        atividades = []
+        atividades, maximos = [], {}
         for linha in linhas_json(arquivo, avisos):
             instante = data(linha.get("timestamp"))
+            if "timestamp" in linha and instante is None:
+                avisos.append(f"{arquivo.name}: horário inválido")
             if instante:
                 primeira = min(primeira or instante, instante)
                 ultima = max(ultima or instante, instante)
             carga = linha.get("payload") or {}
+            if not isinstance(carga, dict):
+                avisos.append(f"{arquivo.name}: payload inválido")
+                continue
+            if linha.get("type") in ("session_meta", "turn_context"):
+                local = texto_metrica(carga.get("cwd", local), local, arquivo, avisos)
+                modelo = texto_metrica(carga.get("model", modelo), modelo, arquivo, avisos)
+                git = carga.get("git") or {}
+                if not isinstance(git, dict):
+                    avisos.append(f"{arquivo.name}: contexto Git inválido")
+                    git = {}
+                branch = texto_metrica(git.get("branch", branch), branch, arquivo, avisos)
             if linha.get("type") == "session_meta":
-                local = carga.get("cwd", local)
-                modelo = carga.get("model", modelo)
-                branch = (carga.get("git") or {}).get("branch", branch)
                 inicio = data(carga.get("timestamp"))
                 if inicio:
                     primeira = min(primeira or inicio, inicio)
                 papel = "subagente" if isinstance(carga.get("source"), dict) or carga.get("agent_role") else "principal"
-            elif linha.get("type") == "turn_context":
-                local = carga.get("cwd", local)
-                modelo = carga.get("model", modelo)
             elif linha.get("type") == "event_msg" and carga.get("type") == "token_count":
-                total = (carga.get("info") or {}).get("total_token_usage")
+                info = carga.get("info")
+                total = info.get("total_token_usage") if isinstance(info, dict) else None
+                if info is not None and (not isinstance(total, dict) or not total):
+                    avisos.append(f"{arquivo.name}: uso Codex inválido")
                 if isinstance(total, dict) and total:
+                    for campo in ("input_tokens", "output_tokens", "cached_input_tokens", "total_tokens"):
+                        valor = numero(total.get(campo))
+                        if valor is not None:
+                            maximos[campo] = max(maximos.get(campo, 0), valor)
+                    # Cache é parte da entrada; sozinho já comprova esse consumo mínimo.
+                    entrada = numero(total.get("input_tokens"))
+                    cache = numero(total.get("cached_input_tokens"))
+                    incompleto = entrada is None or numero(total.get("output_tokens")) is None
+                    if entrada is None and cache:
+                        total = {**total, "input_tokens": cache}
                     # O acumulado inclui os modelos anteriores; só o delta pertence ao atual.
                     deltas = {}
                     for destino, origem in (("entrada", "input_tokens"), ("saida", "output_tokens"),
@@ -224,8 +289,8 @@ def ler_codex(pasta: Path, avisos: list) -> list:
                         # só o que ultrapassa esse máximo é consumo adicional verificável.
                         if valor is not None:
                             anterior[destino] = max(previo, valor)
-                    if any(valor != 0 for valor in deltas.values()) or not grupos:
-                        chave = (modelo, papel, local, branch)
+                    chave = (modelo, papel, local, branch)
+                    if any(valor != 0 for valor in deltas.values()) or chave not in grupos:
                         if chave not in grupos:
                             grupos[chave] = registro("codex", modelo, papel, local, branch, None, None,
                                                       {"entrada": 0, "saida": 0}, minutos=0)
@@ -233,6 +298,11 @@ def ler_codex(pasta: Path, avisos: list) -> list:
                         grupo["custo_confiavel"] = grupo.get("custo_confiavel", True) and all(
                             valor is not None for valor in deltas.values())
                         grupo["parcial"] = grupo.get("parcial", False) or not grupo["custo_confiavel"]
+                        if incompleto:
+                            grupo["parcial"], grupo["custo_confiavel"] = True, False
+                        if instante is None:
+                            grupo["medicao_incompleta"] = True
+                            grupo["janela_incerta"] = True
                         for campo, valor in deltas.items():
                             grupo[campo] += valor or 0
                         atividades.append((chave, instante))
@@ -246,8 +316,32 @@ def ler_codex(pasta: Path, avisos: list) -> list:
             grupos[atividades[-1][0]]["minutos"] += max(0, (ultima - anterior_instante).total_seconds() / 60)
         for grupo in grupos.values():
             grupo["inicio"], grupo["fim"] = primeira, ultima
+        sinalizar_leitura(grupos, arquivo, avisos, inicio_avisos, "codex", primeira, ultima,
+                          local, branch, modelo)
+        # Não se subtraem acumulados no orçamento. Cada task tocada recebe a sessão inteira;
+        # a atribuição exata entre tasks/modelos não é demonstrável por snapshots parciais.
+        limite = max(maximos.get("input_tokens", 0), maximos.get("cached_input_tokens", 0))
+        limite = max(limite + maximos.get("output_tokens", 0), maximos.get("total_tokens", 0))
+        for grupo in grupos.values():
+            grupo["sessao_orcamento"] = str(arquivo)
+            grupo["limite_superior_tokens"] = limite
+            grupo["limite_superior_minutos"] = ((ultima - primeira).total_seconds() / 60
+                                                 if primeira and ultima else 0)
         registros.extend(grupos.values())
     return registros
+
+
+def sinalizar_leitura(grupos, arquivo, avisos, inicio_avisos, agente, inicio, fim,
+                      local="", branch="", modelo=""):
+    """Uma leitura sem métricas verificáveis não pode desaparecer da verificação."""
+    if not grupos:
+        grupos[None] = registro(agente, modelo, "principal", local, branch, inicio, fim, {},
+                                medicao_incompleta=True)
+    for grupo in grupos.values():
+        grupo["janela_incerta"] = grupo.get("janela_incerta", False) or len(avisos) > inicio_avisos
+        grupo["medicao_incompleta"] = (len(avisos) > inicio_avisos or not grupo["pasta"]
+                                         or inicio is None or fim is None
+                                         or grupo.get("medicao_incompleta", False))
 
 
 def raizes_projeto(pasta: Path) -> list[Path]:
@@ -282,7 +376,7 @@ def ler_antigravity(pasta: Path, avisos: list) -> list:
             avisos.append("Antigravity: leitura imutável; alterações ainda no WAL podem não aparecer")
     except sqlite3.Error:
         avisos.append("Antigravity: banco indisponível ou esquema não suportado")
-        return []
+        return [registro("antigravity", "", "principal", "", "", None, None, {}, medicao_incompleta=True)]
     avisos.append("Antigravity: tokens desconhecidos; bancos de conversas usam blobs sem formato de uso verificado; "
                   "tempo parcial entre último envio e última alteração")
     def caminho(local):
@@ -305,18 +399,27 @@ def ler_kit(pasta: Path, avisos: list) -> list:
     if not arquivo.is_file():
         return []
     registros = []
+    inicio_avisos = len(avisos)
     for linha in linhas_json(arquivo, avisos):
+        inicio_linha = len(avisos)
         inicio = data(linha.get("data"))
         duracao = numero(linha.get("duracao_segundos")) or 0
         # O fim inclui a duração para que o filtro de data não oculte chamadas em andamento à meia-noite.
         fim = inicio + timedelta(seconds=duracao) if inicio else None
-        item = registro("kit", linha.get("modelo"), "executar", linha.get("pasta", ""), "", inicio, fim,
+        local = texto_metrica(linha.get("pasta", ""), "", arquivo, avisos)
+        modelo = texto_metrica(linha.get("modelo", ""), "", arquivo, avisos)
+        task = texto_metrica(linha.get("task", ""), "", arquivo, avisos)
+        item = registro("kit", modelo, "executar", local, "", inicio, fim,
                         {chave: numero(linha.get(chave)) for chave in
                          ("entrada", "saida", "cache_leitura", "cache_escrita", "custo_usd")},
                         parcial=linha.get("parcial", False), custo_confiavel=linha.get("custo_confiavel", True))
-        item["task"] = linha.get("task") or item["task"]
+        item["task"] = task or item["task"]
         item["minutos"] = duracao / 60
+        item["medicao_incompleta"] = (inicio is None or numero(linha.get("duracao_segundos")) is None
+                                        or len(avisos) > inicio_linha or not local)
         registros.append(item)
+    if len(avisos) > inicio_avisos:
+        registros.append(registro("kit", "", "executar", "", "", None, None, {}, medicao_incompleta=True))
     return registros
 
 
@@ -346,12 +449,14 @@ def calcular_custo(item: dict, precos: dict):
 
 
 def agrupar(registros: list, por: str, precos: dict) -> list:
-    grupos = {}
+    grupos, sessoes, tempos = {}, set(), {}
     for item in registros:
         chave = item[por]
         if chave not in grupos:
             grupos[chave] = {por: chave, "entrada": 0, "saida": 0, "cache_leitura": 0,
                              "cache_escrita": 0, "tokens": 0, "minutos": 0, "custo_usd": 0,
+                             "limite_superior_tokens": 0, "limite_superior_minutos": 0,
+                             "medicao_incompleta": False,
                              "parcial": False, "uso_conhecido": False}
         grupo = grupos[chave]
         grupo["parcial"] |= item.get("parcial", False)
@@ -361,12 +466,31 @@ def agrupar(registros: list, por: str, precos: dict) -> list:
                 grupo["parcial"] = True
             grupo[campo] += item.get(campo) or 0
         grupo["tokens"] = grupo["entrada"] + grupo["saida"]
+        sessao = (chave, item.get("sessao_orcamento"))
+        contar_limite = not item.get("sessao_orcamento") or sessao not in sessoes
+        if contar_limite:
+            grupo["limite_superior_tokens"] += item.get("limite_superior_tokens",
+                max(item.get("entrada") or 0, item.get("cache_leitura") or 0) + (item.get("saida") or 0))
+            sessoes.add(sessao)
+        grupo["medicao_incompleta"] |= (item.get("medicao_incompleta", False)
+                                        or item.get("parcial", False)
+                                        or item.get("entrada") is None or item.get("saida") is None)
+        minutos = item.get("minutos", max(0, (item["fim"] - item["inicio"]).total_seconds() / 60)
+                           if item["inicio"] and item["fim"] else 0)
+        if item.get("sessoes_tempo"):
+            for sessao_tempo, duracao in item["sessoes_tempo"].items():
+                chave_tempo = (chave, sessao_tempo)
+                tempos[chave_tempo] = max(tempos.get(chave_tempo, 0), duracao)
+        elif contar_limite:
+            grupo["limite_superior_minutos"] += item.get("limite_superior_minutos", minutos)
         if "minutos" in item:
             grupo["minutos"] += item["minutos"]
         elif item["inicio"] and item["fim"]:
             grupo["minutos"] += max(0, (item["fim"] - item["inicio"]).total_seconds() / 60)
         valor = calcular_custo(item, precos)
         grupo["custo_usd"] = None if valor is None or grupo["custo_usd"] is None else grupo["custo_usd"] + valor
+    for (chave, _), duracao in tempos.items():
+        grupos[chave]["limite_superior_minutos"] += duracao
     for grupo in grupos.values():
         if not grupo.pop("uso_conhecido"):
             for campo in ("tokens", "entrada", "saida", "cache_leitura", "cache_escrita"):

@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import random
 import sqlite3
 import subprocess
 import tempfile
@@ -309,11 +310,178 @@ class MedicaoTest(unittest.TestCase):
                     self.assertEqual(codigo, 1)  # Dois papéis ainda consomem o orçamento da mesma task.
                     self.assertEqual(dados["grupos"][0]["tokens"], 600000)
                 else:
-                    self.assertEqual(codigo, 0)
-                    self.assertEqual(dados["estouros"], [])
+                    # Revisão 2: orçamento usa a sessão inteira por task, preservando a estimativa.
+                    self.assertEqual(codigo, 1)
+                    self.assertEqual(len(dados["estouros"]), 2)
+                    self.assertEqual({item["limite_superior_tokens"] for item in dados["grupos"]}, {600000})
                     self.assertEqual({item["task"]: (item["tokens"], item["minutos"])
                                       for item in dados["grupos"]},
                                      {"BL-LU-3": (300000, 1), "BL-LU-4": (300000, 1)})
+
+    def preparar_orcamento(self, tokens=400000, minutos=30):
+        projeto = self.raiz / ".kit-ia/projeto.yaml"
+        projeto.parent.mkdir(exist_ok=True)
+        projeto.write_text(f"orcamento:\n  por_task: {{tokens: {tokens}, minutos: {minutos}}}", encoding="utf-8")
+
+    def test_campo_ausente_claude_nao_apaga_500011_tokens_reportados(self):
+        self.preparar_orcamento()
+        self.gravar("claude/a.jsonl", [{"requestId": "r1", "cwd": str(self.raiz),
+            "gitBranch": "task/BL-LU-3", "timestamp": f"2026-11-17T00:0{indice}:00Z",
+            "message": {"model": "modelo", "usage": uso}} for indice, uso in enumerate([
+                {"input_tokens": 500000, "output_tokens": 10}, {"output_tokens": 11}])])
+        codigo, saida, _ = self.rodar("--check-budget", str(self.raiz), "--json")
+        grupo = json.loads(saida)["grupos"][0]
+        self.assertEqual(codigo, 1)
+        self.assertEqual(grupo["tokens"], 500011)
+        self.assertEqual(grupo["limite_superior_tokens"], 500011)
+        self.assertTrue(grupo["medicao_incompleta"])
+
+    def test_codex_cache_com_entrada_nula_preserva_500001_tokens_reportados(self):
+        self.preparar_orcamento()
+        self.gravar("codex/a.jsonl", [
+            {"type": "session_meta", "timestamp": "2026-11-17T00:00:00Z", "payload": {
+                "cwd": str(self.raiz), "model": "modelo", "git": {"branch": "task/BL-LU-3"}}},
+            {"type": "event_msg", "timestamp": "2026-11-17T00:01:00Z", "payload": {
+                "type": "token_count", "info": {"total_token_usage": {
+                    "input_tokens": None, "cached_input_tokens": 500000, "output_tokens": 1}}}}])
+        codigo, saida, _ = self.rodar("--check-budget", str(self.raiz), "--json")
+        grupo = json.loads(saida)["grupos"][0]
+        self.assertEqual(codigo, 1)
+        self.assertEqual(grupo["tokens"], 500001)
+        self.assertEqual(grupo["limite_superior_tokens"], 500001)
+        self.assertTrue(grupo["medicao_incompleta"])
+
+    def test_limite_claude_usa_maximos_por_campo_sem_somar_snapshots(self):
+        self.preparar_orcamento()
+        self.gravar("claude/a.jsonl", [{"requestId": "r1", "cwd": str(self.raiz),
+            "gitBranch": "task/BL-LU-3", "timestamp": f"2026-11-17T00:0{indice}:00Z",
+            "message": {"model": "modelo", "usage": uso}} for indice, uso in enumerate([
+                {"input_tokens": 500000, "output_tokens": 10},
+                {"input_tokens": 1, "output_tokens": 11}])])
+        codigo, saida, _ = self.rodar("--check-budget", str(self.raiz), "--json")
+        grupo = json.loads(saida)["grupos"][0]
+        self.assertEqual(grupo["tokens"], 12)
+        self.assertEqual(grupo["limite_superior_tokens"], 500011)
+        self.assertEqual(codigo, 1)
+
+    def test_orcamento_recusa_registros_ilegíveis_inclusive_sem_contexto(self):
+        self.preparar_orcamento(tokens=999999999)
+        for fonte in ("claude/a.jsonl", "codex/a.jsonl", "kit/uso.jsonl"):
+            for linha in ('{"truncado":', '[]', '{"payload": []}'):
+                with self.subTest(fonte=fonte, linha=linha):
+                    arquivo = self.gravar(fonte, [])
+                    arquivo.write_text(linha, encoding="utf-8")
+                    codigo, saida, erro = self.rodar("--check-budget", str(self.raiz),
+                                                   "--desde", "2026-11-17", "--json")
+                    self.assertEqual(codigo, 1, erro)
+                    self.assertTrue(json.loads(saida)["incompletas"])
+                    arquivo.unlink()
+
+    def test_orcamento_recusa_corrupcao_com_contexto_antigo_e_data_filtrada(self):
+        self.preparar_orcamento(tokens=999999999)
+        arquivo = self.codex()
+        for linha in ('{"truncado":', '{"type":"session_meta","payload":{"git":[1]}}',
+                      '{"type":"turn_context","payload":{"cwd":[]}}',
+                      '{"type":"event_msg","payload":{"type":"token_count","info":[]}}'):
+            with self.subTest(linha=linha):
+                self.codex()
+                with arquivo.open("a", encoding="utf-8") as fluxo:
+                    fluxo.write(linha + "\n")
+                codigo, saida, erro = self.rodar("--check-budget", str(self.raiz),
+                                               "--desde", "2026-11-17", "--json")
+                self.assertEqual(codigo, 1, erro)
+                self.assertEqual(json.loads(saida)["incompletas"], ["BL-LU-3: medição incompleta"])
+
+    def test_orcamento_recusa_falha_de_leitura_e_banco_antigravity_corrompido(self):
+        self.preparar_orcamento()
+        arquivo = self.codex()
+        abrir = Path.open
+        def abrir_falso(caminho, *argumentos, **opcoes):
+            if caminho == arquivo:
+                raise PermissionError("sem acesso")
+            return abrir(caminho, *argumentos, **opcoes)
+        with patch("custo.Path.open", new=abrir_falso):
+            codigo, saida, erro = self.rodar("--check-budget", str(self.raiz), "--json")
+        self.assertEqual(codigo, 1, erro)
+        self.assertTrue(json.loads(saida)["incompletas"])
+        arquivo.unlink()
+        banco = self.raiz / "antigravity/conversation_summaries.db"
+        banco.parent.mkdir()
+        banco.write_bytes(b"banco corrompido")
+        codigo, saida, erro = self.rodar("--check-budget", str(self.raiz), "--json")
+        self.assertEqual(codigo, 1, erro)
+        self.assertTrue(json.loads(saida)["incompletas"])
+
+    def test_propriedade_limite_nunca_oculta_consumo_em_500_casos(self):
+        gerador = random.Random(173)
+        principal = self.raiz / "repositorio"
+        configuracao = principal / ".kit-ia/projeto.yaml"
+        configuracao.parent.mkdir(parents=True)
+        configuracao.write_text("orcamento: {por_task: {tokens: 400000, minutos: 30}}", encoding="utf-8")
+        worktree = self.raiz / "worktrees/BL-LU-3"
+        worktree.mkdir(parents=True)
+        saida_git = f"worktree {principal}\0\0worktree {worktree}\0\0"
+        resultado_git = subprocess.CompletedProcess([], 0, stdout=saida_git, stderr="")
+        excedidos = 0
+        for caso in range(500):
+            with self.subTest(caso=caso):
+                agente = "claude" if caso % 2 else "codex"
+                local = principal if gerador.randrange(2) else worktree
+                task = f"BL-LU-{3 + caso % 7}"
+                # O oráculo é o consumo conhecido antes de gerar logs, independente do leitor.
+                entrada, saida = gerador.randint(100000, 600000), gerador.randint(1, 10000)
+                cache = gerador.randint(0, entrada)
+                real = entrada + saida
+                excedidos += real > 400000
+                totais = {"input_tokens": entrada, "output_tokens": saida,
+                          "cached_input_tokens": cache}
+                parciais = []
+                for _ in range(gerador.randint(2, 6)):
+                    parcial = {campo: gerador.randint(0, valor) for campo, valor in totais.items()}
+                    campo = gerador.choice(list(parcial))
+                    if gerador.randrange(2):
+                        parcial.pop(campo)
+                    else:
+                        parcial[campo] = None
+                    parciais.append(parcial)
+                usos = [totais, totais.copy(), *parciais]
+                gerador.shuffle(usos)
+                linhas = []
+                for indice, uso in enumerate(usos):
+                    horario = f"2026-11-{16 if indice == 0 else 17}T{'23:59' if indice == 0 else '00:01'}:00Z"
+                    modelo = f"modelo-{indice % 2}"
+                    if agente == "claude":
+                        convertido = {("cache_read_input_tokens" if campo == "cached_input_tokens" else campo): valor
+                                      for campo, valor in uso.items()}
+                        # Claude informa entrada sem cache, diferentemente do acumulado Codex.
+                        if numero_entrada := convertido.get("input_tokens"):
+                            convertido["input_tokens"] = max(0, numero_entrada - (convertido.get("cache_read_input_tokens") or 0))
+                        linhas.append({"requestId": "r1", "timestamp": horario, "cwd": str(local),
+                            "gitBranch": f"task/{task}", "message": {"model": modelo, "usage": convertido}})
+                    else:
+                        linhas.extend([
+                            {"type": "session_meta", "timestamp": horario, "payload": {
+                                "cwd": str(local), "model": modelo, "git": {"branch": f"task/{task}"}}},
+                            {"type": "event_msg", "timestamp": horario, "payload": {
+                                "type": "token_count", "info": {"total_token_usage": uso}}}])
+                if agente == "claude":
+                    gerador.shuffle(linhas)
+                else:
+                    blocos = [linhas[indice:indice + 2] for indice in range(0, len(linhas), 2)]
+                    gerador.shuffle(blocos)
+                    linhas = [linha for bloco in blocos for linha in bloco]
+                arquivo = self.gravar(f"{agente}/a.jsonl", linhas)
+                with patch("custo.subprocess.run", return_value=resultado_git):
+                    codigo, texto, erro = self.rodar("--check-budget", str(principal),
+                                                    "--desde", "2026-11-17", "--json")
+                grupo = json.loads(texto)["grupos"][0]
+                self.assertEqual(grupo["task"], task)
+                self.assertGreaterEqual(grupo["limite_superior_tokens"], real)
+                self.assertGreaterEqual(grupo["limite_superior_minutos"], 2)
+                if real > 400000:
+                    self.assertEqual(codigo, 1, erro)
+                arquivo.unlink()
+        self.assertGreater(excedidos, 0)
 
     def test_claude_tempo_usa_extremos_mesmo_com_eventos_fora_de_ordem(self):
         self.gravar("claude/a.jsonl", [

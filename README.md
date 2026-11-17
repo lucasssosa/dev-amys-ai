@@ -116,7 +116,10 @@ Configure tarifas em [config/precos.json](config/precos.json), por nome exato de
 com `entrada`, `saida`, `cache_leitura` e `cache_escrita` em USD por milhão de tokens.
 Sem tarifa, o custo aparece como `—` (`null` no JSON); `usage.cost` do provedor tem prioridade.
 O cache já faz parte da entrada normalizada: não some as colunas de cache ao total de tokens.
-Tokens desconhecidos aparecem como `—`; `*` indica medição parcial.
+Tokens desconhecidos aparecem como `—`; `*` indica medição parcial. O relatório mostra
+a estimativa em `Tokens` e o limite superior conservador em `Limite tokens`, com os
+equivalentes de tempo. No JSON: `tokens`, `minutos`, `limite_superior_tokens`,
+`limite_superior_minutos` e `medicao_incompleta`.
 
 `executar` registra somente data, protocolo, URL sem credenciais/query, modelo, uso, duração,
 pasta e task em `~/.kit-ia/uso.jsonl`. Falha na gravação ou telemetria inválida apenas emite
@@ -126,8 +129,13 @@ substituíveis por `KIT_IA_HOME`, `KIT_IA_CLAUDE_DIR` (padrão `~/.claude/projec
 
 O orçamento lê `.kit-ia/projeto.yaml` do projeto indicado, filtra sessões dentro dessa pasta
 e das worktrees registradas pelo Git para o mesmo repositório e compara cada task com
-`orcamento.por_task.tokens` e `minutos`. Retorna 1 ao exceder e 0
-quando não há excesso medido; uso parcial é avisado e não comprova cumprimento do orçamento.
+`orcamento.por_task.tokens` e `minutos` usando somente o limite superior, nunca a estimativa.
+Claude usa o maior valor de cada contador por resposta; Codex usa os maiores acumulados
+da sessão, sem subtrações, atribuindo a sessão inteira a cada task tocada.
+Retorna 1 ao exceder ou quando há medição incompleta, e 0 somente com medição completa
+sem excesso. Registros ilegíveis sem contexto bloqueiam a verificação, pois não é possível
+descartar que pertençam ao projeto. Na dúvida, o erro é para o lado de "estourou".
+Os aliases `cost` e `--check-budget` aceitam os mesmos argumentos.
 O leitor aceita mapas indentados/inline, listas simples, strings, números e comentários;
 sintaxe fora desse subconjunto produz erro com a linha. Não interrompe agentes em execução.
 

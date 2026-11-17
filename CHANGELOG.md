@@ -2,6 +2,11 @@
 
 ## [0.2.0] - 2026-11-17
 
+- Orçamento conservador separado da estimativa: máximos por contador de resposta Claude
+  e por sessão Codex, com limite superior de tokens e tempo visível no relatório.
+  Registros incompletos ou ilegíveis impedem aprovação; aliases `cost` e `--check-budget`.
+- Campo ausente numa atualização Claude preserva o contador conhecido; OpenAI e Codex
+  preservam cache conhecido quando a entrada é desconhecida, sem ocultar excesso de orçamento.
 - Comando `custo` com métricas locais de Claude Code, Codex, Antigravity e `executar`,
   agrupadas por task, agente, modelo ou papel, em texto, JSON ou Markdown por lote.
 - Registro de uso e duração de `executar`, incluindo `--task`, cache e custo informado pelo

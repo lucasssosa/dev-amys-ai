@@ -750,12 +750,16 @@ def cmd_custo(args) -> int:
     registros, avisos = custo.coletar()
     if desde:
         # O filtro inclui a sessão inteira se houve atividade no período; não estima frações de uso.
-        registros = [item for item in registros if item["fim"] and item["fim"] >= desde]
+        registros = [item for item in registros if (item["fim"] and item["fim"] >= desde)
+                     or item.get("janela_incerta")
+                     or (item["fim"] is None and item.get("medicao_incompleta"))]
     lote = [item.strip() for item in args.lote.split(",") if item.strip()] if args.lote else []
     if lote:
-        registros = [item for item in registros if item["task"] in lote]
+        registros = [item for item in registros if item["task"] in lote
+                     or (item.get("medicao_incompleta") and item["task"] == "(sem task)")]
     por = "task" if lote or args.verificar_orcamento else args.por
     estouros = []
+    incompletas = []
     if args.verificar_orcamento:
         projeto = Path(args.verificar_orcamento).resolve()
         configuracao = ler_projeto(projeto)
@@ -768,6 +772,8 @@ def cmd_custo(args) -> int:
             raiz_projeto = raiz_projeto.parent
         raizes = custo.raizes_projeto(raiz_projeto)
         def do_projeto(item):
+            if not item["pasta"]:
+                return item.get("medicao_incompleta", False)
             try:
                 return any(Path(item["pasta"]).resolve().is_relative_to(raiz) for raiz in raizes)
             except (OSError, ValueError):
@@ -777,30 +783,35 @@ def cmd_custo(args) -> int:
     if args.verificar_orcamento:
         for grupo in grupos:
             for campo in ("tokens", "minutos"):
-                if grupo[campo] is not None and grupo[campo] > limites[campo]:
-                    estouros.append(f"{grupo['task']}: {campo} {grupo[campo]:.2f} > {limites[campo]}")
+                superior = grupo[f"limite_superior_{campo}"]
+                if superior > limites[campo]:
+                    estouros.append(f"{grupo['task']}: {campo} {superior:.2f} > {limites[campo]}")
+            if grupo["medicao_incompleta"]:
+                incompletas.append(f"{grupo['task']}: medição incompleta")
             if grupo["parcial"]:
                 avisos.append(f"{grupo['task']}: orçamento de tokens só verificável parcialmente")
     if args.json:
-        print(json.dumps({"por": por, "grupos": grupos, "avisos": sorted(set(avisos)), "estouros": estouros},
+        print(json.dumps({"por": por, "grupos": grupos, "avisos": sorted(set(avisos)), "estouros": estouros,
+                          "incompletas": incompletas},
                          ensure_ascii=False, indent=2))
     else:
         if lote:
             print(f"Lote: {', '.join(lote)}")
-            print("| Task | Tokens | Tempo (min) | Custo (USD) |")
-            print("| --- | ---: | ---: | ---: |")
+            print("| Task | Tokens estimados | Tempo (min) | Custo (USD) | Limite superior tokens | Limite superior min |")
+            print("| --- | ---: | ---: | ---: | ---: | ---: |")
         else:
-            print(f"{por:<24} {'Entrada':>12} {'Saída':>10} {'Cache ler':>12} {'Cache gravar':>12} {'Tokens':>12} {'Minutos':>10} {'USD':>12}")
+            print(f"{por:<24} {'Entrada':>12} {'Saída':>10} {'Cache ler':>12} {'Cache gravar':>12} {'Tokens':>12} {'Minutos':>10} {'USD':>12} {'Limite tokens':>14} {'Limite min':>12}")
         for grupo in grupos:
             valor = "—" if grupo["custo_usd"] is None else f"{grupo['custo_usd']:.6f}"
             tokens = (str(grupo["tokens"]) if grupo["tokens"] is not None else "—") + ("*" if grupo["parcial"] else "")
+            superior = str(grupo["limite_superior_tokens"]) + ("*" if grupo["medicao_incompleta"] else "")
             if lote:
-                print(f"| {grupo[por]} | {tokens} | {grupo['minutos']:.2f} | {valor} |")
+                print(f"| {grupo[por]} | {tokens} | {grupo['minutos']:.2f} | {valor} | {superior} | {grupo['limite_superior_minutos']:.2f} |")
             else:
                 campos = [str(grupo[campo]) if grupo[campo] is not None else "—" for campo in
                           ("entrada", "saida", "cache_leitura", "cache_escrita")]
                 print(f"{grupo[por]:<24} {campos[0]:>12} {campos[1]:>10} {campos[2]:>12} "
-                      f"{campos[3]:>12} {tokens:>12} {grupo['minutos']:>10.2f} {valor:>12}")
+                      f"{campos[3]:>12} {tokens:>12} {grupo['minutos']:>10.2f} {valor:>12} {superior:>14} {grupo['limite_superior_minutos']:>12.2f}")
         if lote:
             fontes = custo.agrupar(registros, "agente", precos)
             if fontes:
@@ -814,7 +825,9 @@ def cmd_custo(args) -> int:
             print(f"aviso: {aviso}", file=sys.stderr)
         for estouro in estouros:
             print(f"ORÇAMENTO EXCEDIDO: {estouro}")
-    return 1 if estouros else 0
+        for incompleta in incompletas:
+            print(f"ORÇAMENTO NÃO VERIFICÁVEL: {incompleta}")
+    return 1 if estouros or incompletas else 0
 
 
 # =============================================================== CLI
@@ -852,11 +865,11 @@ def montar_parser() -> argparse.ArgumentParser:
     p.add_argument("--task", help="ID da task; sem isso, detecta pela branch ou pasta")
     p.set_defaults(func=cmd_executar)
 
-    p = sub.add_parser("custo", help="mede uso local por task, modelo, agente e papel, sem chamar modelos")
+    p = sub.add_parser("custo", aliases=["cost"], help="mede uso local por task, modelo, agente e papel, sem chamar modelos")
     p.add_argument("--desde", help="inclui sessões com atividade desde a data ISO")
     p.add_argument("--por", choices=["task", "modelo", "agente", "papel"], default="task")
     p.add_argument("--lote", help="IDs separados por vírgula; produz tabela Markdown")
-    p.add_argument("--verificar-orcamento", metavar="PROJETO", help="confere orcamento.por_task do projeto")
+    p.add_argument("--verificar-orcamento", "--check-budget", dest="verificar_orcamento", metavar="PROJETO", help="confere orcamento.por_task pelo limite superior; medição incompleta falha")
     p.add_argument("--json", action="store_true", help="saída estruturada para programas")
     p.set_defaults(func=cmd_custo)
     return parser
