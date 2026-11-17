@@ -24,6 +24,21 @@ def rodar(*argv: str) -> tuple[int, str, str]:
     return codigo, saida.getvalue(), erro.getvalue()
 
 
+class ProjetoYamlTest(unittest.TestCase):
+    def test_orcamento_rejeita_yaml_invalido_sem_traceback(self):
+        with tempfile.TemporaryDirectory() as temporaria:
+            projeto = Path(temporaria) / "projeto.yaml"
+            projeto.write_text("nome: antes: depois\norcamento: {por_task: {tokens: 400000, minutos: 30}}",
+                               encoding="utf-8")
+            with unittest.mock.patch("kit.custo.coletar", return_value=([], [])):
+                codigo, _, erro = rodar("custo", "--verificar-orcamento", str(projeto))
+            self.assertEqual(codigo, 1)
+            self.assertIn("linha 1:", erro)
+            self.assertNotIn("Traceback", erro)
+            projeto.write_text("nome: antes :depois", encoding="utf-8")
+            self.assertEqual(kit.ler_projeto(projeto)["nome"], "antes :depois")
+
+
 class FrontmatterTest(unittest.TestCase):
     def test_le_chaves_e_corpo(self):
         dados, corpo = kit.ler_frontmatter("---\nname: x\ndescription: \"faz y\"\n---\n\n# Corpo\n")

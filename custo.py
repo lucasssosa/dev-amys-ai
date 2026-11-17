@@ -178,9 +178,10 @@ def ler_codex(pasta: Path, avisos: list) -> list:
                 local = carga.get("cwd", local)
                 modelo = carga.get("model", modelo)
                 branch = (carga.get("git") or {}).get("branch", branch)
-                primeira = data(carga.get("timestamp")) or primeira
-                if isinstance(carga.get("source"), dict) or carga.get("agent_role"):
-                    papel = "subagente"
+                inicio = data(carga.get("timestamp"))
+                if inicio:
+                    primeira = min(primeira or inicio, inicio)
+                papel = "subagente" if isinstance(carga.get("source"), dict) or carga.get("agent_role") else "principal"
             elif linha.get("type") == "turn_context":
                 local = carga.get("cwd", local)
                 modelo = carga.get("model", modelo)
@@ -193,23 +194,28 @@ def ler_codex(pasta: Path, avisos: list) -> list:
                                             ("cache_leitura", "cached_input_tokens")):
                         valor = numero(total.get(origem, 0 if destino == "cache_leitura" else None))
                         previo = anterior.get(destino, 0)
-                        delta = valor - previo if valor is not None and previo is not None else None
+                        delta = valor - previo if valor is not None else None
                         if delta is not None and delta < 0:
                             delta = None
                             avisos.append(f"{arquivo.name}: acumulado Codex regrediu; uso parcial")
                         deltas[destino] = delta
-                        anterior[destino] = valor
+                        # O maior acumulado é um limite inferior comprovado. Após uma regressão,
+                        # só o que ultrapassa esse máximo é consumo adicional verificável.
+                        if valor is not None:
+                            anterior[destino] = max(previo, valor)
                     if any(valor != 0 for valor in deltas.values()) or not grupos:
-                        if modelo not in grupos:
-                            grupos[modelo] = registro("codex", modelo, papel, local, branch, None, None,
+                        chave = (modelo, papel, local, branch)
+                        if chave not in grupos:
+                            grupos[chave] = registro("codex", modelo, papel, local, branch, None, None,
                                                       {"entrada": 0, "saida": 0}, minutos=0)
-                        grupo = grupos[modelo]
+                        grupo = grupos[chave]
                         grupo["custo_confiavel"] = grupo.get("custo_confiavel", True) and all(
                             valor is not None for valor in deltas.values())
+                        grupo["parcial"] = grupo.get("parcial", False) or not grupo["custo_confiavel"]
                         for campo, valor in deltas.items():
-                            grupo[campo] = None if valor is None or grupo[campo] is None else grupo[campo] + valor
-                        atividades.append((modelo, instante))
-        # Cada intervalo vai para o modelo do próximo evento de uso; a cauda fica com o último.
+                            grupo[campo] += valor or 0
+                        atividades.append((chave, instante))
+        # O intervalo acompanha modelo, pasta, branch e papel do próximo evento de uso.
         anterior_instante = primeira
         for nome, instante in atividades:
             if instante and anterior_instante:
@@ -323,6 +329,7 @@ def agrupar(registros: list, por: str, precos: dict) -> list:
                              "cache_escrita": 0, "tokens": 0, "minutos": 0, "custo_usd": 0,
                              "parcial": False, "uso_conhecido": False}
         grupo = grupos[chave]
+        grupo["parcial"] |= item.get("parcial", False)
         grupo["uso_conhecido"] |= item.get("entrada") is not None or item.get("saida") is not None
         for campo in ("entrada", "saida", "cache_leitura", "cache_escrita"):
             if item.get(campo) is None:
@@ -342,7 +349,7 @@ def agrupar(registros: list, por: str, precos: dict) -> list:
     return sorted(grupos.values(), key=lambda item: item["tokens"] or 0, reverse=True)
 
 
-def separar(texto: str, delimitador: str) -> list[str]:
+def separar(texto: str, delimitador: str, limite: int | None = None) -> list[str]:
     """Separa apenas fora de aspas e coleções, preservando comentários dentro de strings."""
     partes, inicio, pilha, aspas, escape = [], 0, [], "", False
     inicio_escalar = True
@@ -367,7 +374,7 @@ def separar(texto: str, delimitador: str) -> list[str]:
             if not pilha or (pilha.pop(), caractere) not in (("[", "]"), ("{", "}")):
                 raise ValueError("coleção mal fechada")
             inicio_escalar = False
-        elif caractere == delimitador and not pilha:
+        elif caractere == delimitador and not pilha and (limite is None or len(partes) < limite):
             if delimitador == "#" and indice and not texto[indice - 1].isspace():
                 continue
             partes.append(texto[inicio:indice].strip())
@@ -423,13 +430,14 @@ def escalar_yaml(texto: str):
 
 
 def par_yaml(texto: str) -> tuple[str, str]:
-    partes = separar(texto, ":")
+    # Os dois-pontos do valor pertencem ao escalar e precisam chegar intactos à validação.
+    partes = separar(texto, ":", limite=1)
     if len(partes) < 2 or not partes[0]:
         raise ValueError("esperado chave: valor")
     chave = escalar_yaml(partes[0])
     if not isinstance(chave, str):
         raise ValueError("chave deve ser string")
-    return chave, ":".join(partes[1:]).strip()
+    return chave, partes[1]
 
 
 def ler_yaml(texto: str) -> dict:

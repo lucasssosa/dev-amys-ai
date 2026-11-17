@@ -141,6 +141,71 @@ class MedicaoTest(unittest.TestCase):
                 self.assertIsNone(grupo["custo_usd"])
                 self.assertTrue(any("regrediu" in aviso for aviso in avisos))
 
+    def test_codex_regressao_preserva_limite_inferior_e_estouro_do_orcamento(self):
+        projeto = self.raiz / ".kit-ia/projeto.yaml"
+        projeto.parent.mkdir()
+        projeto.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+        linhas = [{"type": "session_meta", "timestamp": "2026-11-16T10:00:00Z", "payload": {
+            "cwd": str(self.raiz), "model": "modelo", "git": {"branch": "task/BL-LU-3"}}}]
+        for total, esperado in ((500000, 500000), (10, 500000), (20, 500000), (500010, 500010)):
+            linhas.append({"type": "event_msg", "timestamp": "2026-11-16T10:01:00Z", "payload": {
+                "type": "token_count", "info": {"total_token_usage": {
+                    "input_tokens": total, "output_tokens": 0, "cached_input_tokens": 0}}}})
+            self.gravar("codex/a.jsonl", linhas)
+            with self.subTest(total=total):
+                codigo, saida, _ = self.rodar("--verificar-orcamento", str(self.raiz), "--json")
+                dados = json.loads(saida)
+                self.assertEqual(codigo, 1)
+                self.assertEqual(dados["grupos"][0]["tokens"], esperado)
+                self.assertEqual(len(dados["estouros"]), 1)
+                if total != 500000:
+                    grupo = custo.agrupar(custo.coletar()[0], "task", {"modelo": {"entrada": 1}})[0]
+                    self.assertTrue(grupo["parcial"])
+                    self.assertIsNone(grupo["custo_usd"])
+                    self.assertTrue(any("regrediu" in aviso for aviso in dados["avisos"]))
+
+    def test_codex_sessao_retomada_separa_tasks_e_intervalos(self):
+        projeto = self.raiz / ".kit-ia/projeto.yaml"
+        projeto.parent.mkdir()
+        projeto.write_text("orcamento:\n  por_task: {tokens: 400000, minutos: 30}", encoding="utf-8")
+        # Isola cada dimensão da chave: a branch pode mudar na mesma pasta, e vice-versa.
+        for dimensao in ("branch", "pasta", "papel"):
+            with self.subTest(dimensao=dimensao):
+                linhas = []
+                for indice in (0, 1):
+                    metadados = {"cwd": str(self.raiz), "model": "modelo"}
+                    if dimensao == "pasta":
+                        metadados["cwd"] = str(self.raiz / f"BL-LU-{3 + indice}")
+                    else:
+                        metadados["git"] = {"branch": f"task/BL-LU-{3 + indice if dimensao == 'branch' else 3}"}
+                    if dimensao == "papel" and indice == 0:
+                        metadados["agent_role"] = "executor"
+                    linhas.extend([
+                        {"type": "session_meta", "timestamp": f"2026-11-16T10:0{indice}:00Z",
+                         "payload": metadados},
+                        {"type": "event_msg", "timestamp": f"2026-11-16T10:0{indice + 1}:00Z", "payload": {
+                            "type": "token_count", "info": {"total_token_usage": {
+                                "input_tokens": 300000 * (indice + 1), "output_tokens": 0}}}},
+                    ])
+                self.gravar("codex/a.jsonl", linhas)
+                registros, avisos = custo.coletar()
+                self.assertFalse(avisos)
+                self.assertEqual(len(registros), 2)
+                self.assertEqual([item["entrada"] for item in registros], [300000, 300000])
+                self.assertEqual([item["minutos"] for item in registros], [1, 1])
+                codigo, saida, _ = self.rodar("--verificar-orcamento", str(self.raiz), "--json")
+                dados = json.loads(saida)
+                if dimensao == "papel":
+                    self.assertEqual({item["papel"] for item in registros}, {"principal", "subagente"})
+                    self.assertEqual(codigo, 1)  # Dois papéis ainda consomem o orçamento da mesma task.
+                    self.assertEqual(dados["grupos"][0]["tokens"], 600000)
+                else:
+                    self.assertEqual(codigo, 0)
+                    self.assertEqual(dados["estouros"], [])
+                    self.assertEqual({item["task"]: (item["tokens"], item["minutos"])
+                                      for item in dados["grupos"]},
+                                     {"BL-LU-3": (300000, 1), "BL-LU-4": (300000, 1)})
+
     def test_claude_tempo_usa_extremos_mesmo_com_eventos_fora_de_ordem(self):
         self.gravar("claude/a.jsonl", [
             {"timestamp": "2026-11-16T10:02:00Z", "requestId": "um", "message": {
@@ -296,6 +361,20 @@ class MedicaoTest(unittest.TestCase):
 
 
 class YamlTest(unittest.TestCase):
+    def test_preserva_espaco_antes_de_dois_pontos_no_valor(self):
+        dados = custo.ler_yaml('''nome: antes :depois
+mapa: {nome: antes :depois}
+aspas: "antes: depois"
+''')
+        self.assertEqual(dados, {"nome": "antes :depois", "mapa": {"nome": "antes :depois"},
+                                 "aspas": "antes: depois"})
+
+    def test_rejeita_dois_pontos_estrutural_em_escalar_com_linha(self):
+        for texto in ("nome: antes: depois", "mapa: {nome: antes: depois}",
+                      "nomes:\n  - antes: depois"):
+            with self.subTest(texto=texto), self.assertRaisesRegex(ValueError, "linha [12]:"):
+                custo.ler_yaml(texto)
+
     def test_apostrofo_em_escalar_sem_aspas_e_aspas_delimitadoras(self):
         dados = custo.ler_yaml('''nome: D'Avila # comentário
 lista: [D'Avila, "D'Avila # nome", 'D''Avila: nome']

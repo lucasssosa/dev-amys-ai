@@ -14,6 +14,12 @@
   modelo no Codex distribui diferenças dos acumulados para calcular o custo por modelo.
 - Telemetria opcional malformada emite aviso e preserva a resposta de `executar`;
   o leitor YAML aceita apóstrofos em strings sem aspas, como `D'Avila`.
+- Regressões do acumulado Codex preservam o consumo comprovado como limite inferior,
+  mantendo a detecção de orçamento excedido, a indicação de uso parcial e o custo desconhecido.
+- Sessões Codex retomadas separam consumo e intervalos por modelo, pasta, branch e papel,
+  evitando atribuir o uso de várias tasks à primeira delas.
+- O leitor YAML preserva espaços e dois-pontos nos valores e rejeita separadores estruturais
+  em strings sem aspas com indicação da linha.
 
 ## [0.1.2] - 2026-11-17
 

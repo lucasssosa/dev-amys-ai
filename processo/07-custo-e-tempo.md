@@ -47,14 +47,18 @@ Use `--por task`, `modelo`, `agente` ou `papel`. A task vem da branch ou da past
 Entrada inclui cache; as colunas de cache são detalhamento, não tokens adicionais.
 O Claude é deduplicado por requestId (ou message.id); no Codex, diferenças entre totais
 acumulados pertencem ao modelo ativo no evento, sem somar cache ou raciocínio novamente.
-Acumulados regressivos geram aviso e uso parcial, com custo desconhecido.
+Acumulados regressivos geram aviso e uso parcial, com custo desconhecido. O maior valor
+comprovado de cada contador é preservado como limite inferior: só o que ultrapassa esse
+máximo acrescenta consumo verificável. Assim, uma regressão não apaga um excesso de
+orçamento já medido.
 
 Minutos são da primeira à última atividade da sessão (incluindo pausas); somas podem conter
 sessões simultâneas. Nas chamadas do kit, mede-se a duração da requisição.
 Em sessões Claude com vários modelos, os intervalos vão para o último
 modelo ativo, com o trecho anterior à primeira resposta atribuído ao primeiro modelo.
-No Codex, cada intervalo vai para o modelo do próximo evento de uso; o trecho final fica
-com o último modelo que consumiu tokens, sem duplicar a duração da sessão.
+No Codex, consumo e intervalos são separados por modelo, pasta, branch e papel, inclusive
+quando uma sessão é retomada em outra task. Cada intervalo vai para o grupo do próximo
+evento de uso; o trecho final fica com o último grupo ativo, sem duplicar a duração da sessão.
 Antigravity tem tokens desconhecidos e tempo parcial entre último envio e última alteração: os bancos
 de conversas têm blobs sem formato de uso verificado. Leitura imutável, quando necessária,
 avisa sobre dados possivelmente ainda no WAL. OpenCode/Kilo não têm leitor verificado.
